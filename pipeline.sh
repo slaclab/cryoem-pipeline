@@ -168,8 +168,11 @@ do_spa()
 
   echo "  - task: preview"
   local start=$(date +%s.%N)
-  generate_preview $ALIGNED_DW_FILE $PARTICLE_FILE
+  local PREVIEW_FILE=$(generate_preview "$ALIGNED_DW_FILE" "$PARTICLE_FILE")
+  echo "    files:"
+  dump_file_meta "${PREVIEW_FILE}"
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
+  echo "    duration: $duration"
 
 }
 
@@ -248,6 +251,12 @@ do_spa_align() {
   for k in "${!align[@]}"; do
   echo "      $k: ${align[$k]}"
   done
+
+  PROCESSED_ALIGN_FIRST1=${align[first1]}
+  PROCESSED_ALIGN_FIRST3=${align[first3]}
+  PROCESSED_ALIGN_FIRST5=${align[first5]}
+  PROCESSED_ALIGN_FIRST8=${align[first8]}
+  PROCESSED_ALIGN_ALL=${align[all]}
 
 
   echo "  - task: ctf_align"
@@ -697,8 +706,8 @@ generate_preview()
     >&2 echo "particle picked preview file $picked_preview already exists..."
   fi
 
+  local aligned_jpg=$(generate_jpg "$aligned" /tmp)
   if [ ! -e "$picked_preview" ]; then
-    local aligned_jpg=$(generate_jpg "$aligned" /tmp)
     local origifs=$IFS
     IFS=$'
 '
@@ -738,9 +747,10 @@ generate_preview()
   local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.jpg)
   local res="${PROCESSED_ALIGN_RESOLUTION}Å (${PROCESSED_ALIGN_NYQUIST}%)"
   convert \
-    -resize '512x512^' -extent '512x512' $aligned_jpg \
+    -resize '512x512^' -extent '512x512' \
+    $aligned_jpg \
     ${ALIGNED_CTF_PREVIEW} \
-    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill orange -draw "text 402,46 \"drift / \"" \
+    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill orange -draw "text 402,46 \"${PROCESSED_ALIGN_FIRST1} / ${PROCESSED_ALIGN_FIRST5} / ${PROCESSED_ALIGN_ALL}\"" \
     +append -font DejaVu-Sans-Condensed -pointsize 28 -fill orange -draw "text 854,46 \"$res\"" \
     $bottom
 
