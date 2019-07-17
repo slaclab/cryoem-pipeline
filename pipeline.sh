@@ -240,7 +240,15 @@ do_spa_align() {
   dump_file_meta "${ALIGNED_DW_FILE}"
 
   echo "  - task: align_data"
-  parse_motioncor ${ALIGNED_FILE}
+  local file=$(motioncor_file ${ALIGNED_FILE})
+  echo "    file: $file"
+  echo "    data:"
+  local align=$(parse_motioncor ${ALIGNED_FILE})
+  eval $align
+  for k in "${!align[@]}"; do
+  echo "      $k: ${align[$k]}"
+  done
+
 
   echo "  - task: ctf_align"
   local start=$(date +%s.%N)
@@ -745,7 +753,6 @@ generate_preview()
   local filename=$(basename -- "$aligned")
   local extension="${filename##*.}"
   local output="$outdir/${filename%_DW.${extension}}_sidebyside.jpg"
-  
   convert $top $bottom \
      -append $output
   rm -f $top $bottom
@@ -784,15 +791,19 @@ END { \
 }'
 }
 
+motioncor_file()
+{
+  local input=$1
+  local datafile="${input}.log0-Patch-Full.log"
+  echo $datafile
+
+}
+
 parse_motioncor()
 {
   local input=$1
+  local datafile=$(motioncor_file "$input")
 
-  local datafile="${input}.log0-Patch-Full.log"
-
-  echo "    file: $datafile"
-
-  echo "    data:"
   cat $datafile | grep -vE '^$' | awk '
 !/# / { 
   if( $1 > 1 ){ 
@@ -803,13 +814,12 @@ parse_motioncor()
 } lastx=$2; lasty=$3; next; } 
 END { 
   for (i = 1; i <= length(drifts); ++i) {
+    if( i <= 3 ){ first3 += drifts[i] }
     if( i <= 5 ){ first5 += drifts[i] }
+    if( i <= 8 ){ first8 += drifts[i] }
     all += drifts[i]
   }
-  #print "      frames: " length(drifts)+1;
-  print "      first1: " drifts[1];
-  print "      first5: " first5 / 5;
-  print "      all: " all / length(drifts);
+  print "declare -A align; align[first1]="drifts[1] " align[first3]="first3/3 " align[first5]="first5/5 " align[first8]="first8/8 " align[all]="all/length(drifts) " align[frames]="length(drifts)+1;
 }'
 # print "    - "lastx "-"x" ("dx*dx")\t" lasty "-"y" ("dy*dy"):\t" n;
 
