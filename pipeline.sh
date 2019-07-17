@@ -149,6 +149,8 @@ do_spa()
   fi
  
   # start doing something!
+  echo "single_particle_analysis:"
+
   if [[ "$TASK" == "align" || "$TASK" == "all" ]]; then
     do_spa_align
   fi
@@ -224,7 +226,6 @@ do_spa_align() {
   >&2 echo
   >&2 echo "Processing align for micrograph $MICROGRAPH..."
 
-  echo "single_particle_analysis:"
 
   echo "  - task: align"
   local start=$(date +%s.%N)
@@ -239,15 +240,15 @@ do_spa_align() {
   echo "  - task: align_data"
   parse_motioncor ${ALIGNED_FILE}
 
-  echo "  - task: ctf"
+  echo "  - task: ctf_align"
   local start=$(date +%s.%N)
-  ALIGNED_CTF_FILE=$(process_ctffind "$ALIGNED_FILE" "./aligned/motioncor2/$MOTIONCOR2_VERSION/ctffind4/$CTFFIND4_VERSION")
+  ALIGNED_CTF_FILE=$(process_ctffind "$ALIGNED_FILE" "aligned/motioncor2/$MOTIONCOR2_VERSION/ctffind4/$CTFFIND4_VERSION")
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
   echo "    duration: $duration"
   echo "    files:"
   dump_file_meta  "${ALIGNED_CTF_FILE}"
 
-  echo "  - task: ctf data"
+  echo "  - task: ctf_align_data"
   parse_ctffind $ALIGNED_CTF_FILE
 
 }
@@ -263,7 +264,7 @@ do_spa_sum() {
   local filename=$(basename -- "$MICROGRAPH")
   local extension="${filename##*.}"
 
-  local outdir=./summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION/
+  local outdir=summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION/
   SUMMED_CTF_FILE="$outdir/${filename%.${extension}}_sum_ctf.mrc"
   # check for the SUMMED_CTF_FILE, do if not exists
   if [ -e $SUMMED_CTF_FILE ]; then
@@ -273,20 +274,31 @@ do_spa_sum() {
   fi
 
   if [[ $FORCE -eq 1 || ! -e $SUMMED_CTF_FILE ]]; then
-
-    echo "  - task: ctf sum"
+    #local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
+    #echo "    duration: $duration"
+    echo "  - task: sum"
+    local start=$(date +%s.%N)
     local tmpfile="/tmp/${filename%.${extension}}_sum.mrc"
     SUMMED_FILE=$(process_sum "$MICROGRAPH" "$tmpfile" "$GAINREF_FILE")
-    #echo "="${SUMMED_FILE}
-
-    SUMMED_CTF_FILE=$(process_ctffind "$SUMMED_FILE" "./summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION")
-    echo "    file: ${SUMMED_CTF_FILE}"
-
+    local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
+    echo "    duration: $duration"
     rm -f ${tmpfile}
 
   fi
+  #
+  #local path=summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION
+  #SUMMED_CTF_FILE="$path/${filename%.mrc}_sum_ctf.mrc"
+  echo "  - task: ctf_summed"
+  local start=$(date +%s.%N)
+  if [ ! -e "$SUMMED_CTF_FILE" ]; then
+    SUMMED_CTF_FILE=$(process_ctffind "$SUMMED_FILE" "$path")
+  fi
+  local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
+  echo "    duration: $duration"
+  echo "    files:"
+  dump_file_meta "${SUMMED_CTF_FILE}"
 
-  echo "  - task: sum ctf data"
+  echo "  - task: ctf_summed_data"
   parse_ctffind $SUMMED_CTF_FILE
 
 }
@@ -295,8 +307,22 @@ do_spa_sum() {
 do_spa_pick()
 {
   # use DW file?
-  PARTICLE_FILE=$(particle_pick "$ALIGNED_FILE")
-  echo "PARTICLE_FILE="${PARTICLE_FILE}
+  >&2 echo
+  >&2 echo "Processing particle picking for micrograph $ALIGNED_DW_FILE..."
+
+  echo "  - task: particle_pick"
+  local start=$(date +%s.%N)
+  PARTICLE_FILE=$(particle_pick "$ALIGNED_DW_FILE")
+  local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
+  echo "    duration: $duration"
+  echo "    files:"
+  dump_file_meta "${PARTICLE_FILE}"
+
+  echo "    data:"
+  # 11 non-particle lines
+  local particles=$(wc -l ${PARTICLE_FILE} | awk '{print $1-11}')
+  echo "      particles: " $particles
+
 }
 
 
@@ -348,7 +374,7 @@ process_gainref()
 align_file()
 {
   local filename=$(basename -- "$1")
-  local outdir=${2:-./aligned/motioncor2/$MOTIONCOR2_VERSION}
+  local outdir=${2:-aligned/motioncor2/$MOTIONCOR2_VERSION}
   local extension="${filename##*.}"
   local output="$outdir/${filename%.${extension}}_aligned.mrc"
   echo $output
@@ -585,7 +611,7 @@ particle_pick()
 
   local filename=$(basename -- "$input")
   local extension="${filename##*.}"
-  local dirname='./particles'
+  local dirname='particles'
   local output="$dirname/${input%.${extension}}_autopick.star"
 
   if [ -e $output ]; then
@@ -726,7 +752,7 @@ parse_ctffind()
   echo "    file: $datafile"
   echo "    data:"
   cat $datafile | awk \
-'/# Pixel size: / { next } \
+'/# Pixel size: / { apix=$4; next } \
 !/# / { defocus_1=$2; defocus_2=$3; astig=$4; phase_shift=$5; cross_correlation=$6; resolution=$7; next } \
 END { \
 print "      defocus_1: " defocus_1;
@@ -735,6 +761,7 @@ print "      astigmatism: " astig;
 print "      phase_shift: " phase_shift;
 print "      cross_correlation: " cross_correlation;
 print "      resolution: " resolution;
+print "      nyquist: " 2 * apix / resolution;
 }'
 
 }
