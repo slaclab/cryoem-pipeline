@@ -166,8 +166,10 @@ do_spa()
     do_spa_pick
   fi
 
-
-  #generate_preview $ALIGNED_FILE $PARTICLE_FILE
+  echo "  - task: preview"
+  local start=$(date +%s.%N)
+  generate_preview $ALIGNED_DW_FILE $PARTICLE_FILE
+  local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
 
 }
 
@@ -249,8 +251,18 @@ do_spa_align() {
   dump_file_meta  "${ALIGNED_CTF_FILE}"
 
   echo "  - task: ctf_align_data"
-  parse_ctffind $ALIGNED_CTF_FILE
+  local ctf_file=$(ctffind_file $ALIGNED_CTF_FILE)
+  echo "    file: $ctf_file"
+  local ctf_data=$(parse_ctffind $ALIGNED_CTF_FILE)
+  eval $ctf_data
+  echo "    data:"
+  for k in "${!ctf[@]}"; do
+  echo "      $k: ${ctf[$k]}"
+  done
 
+  PROCESSED_ALIGN_RESOLUTION=${ctf[resolution]}
+  PROCESSED_ALIGN_NYQUIST=${ctf[nyquist]}
+  PROCESSED_ALIGN_ASTIGMATISM=${ctf[astigmatism]}
 }
 
 ###
@@ -264,7 +276,7 @@ do_spa_sum() {
   local filename=$(basename -- "$MICROGRAPH")
   local extension="${filename##*.}"
 
-  local outdir=summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION/
+  local outdir=summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION
   SUMMED_CTF_FILE="$outdir/${filename%.${extension}}_sum_ctf.mrc"
   # check for the SUMMED_CTF_FILE, do if not exists
   if [ -e $SUMMED_CTF_FILE ]; then
@@ -285,9 +297,7 @@ do_spa_sum() {
     rm -f ${tmpfile}
 
   fi
-  #
-  #local path=summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION
-  #SUMMED_CTF_FILE="$path/${filename%.mrc}_sum_ctf.mrc"
+
   echo "  - task: ctf_summed"
   local start=$(date +%s.%N)
   if [ ! -e "$SUMMED_CTF_FILE" ]; then
@@ -299,7 +309,17 @@ do_spa_sum() {
   dump_file_meta "${SUMMED_CTF_FILE}"
 
   echo "  - task: ctf_summed_data"
-  parse_ctffind $SUMMED_CTF_FILE
+  local ctf_file=$(ctffind_file $SUMMED_CTF_FILE)
+  echo "    file: $ctf_file"
+  local ctf_data=$(parse_ctffind $SUMMED_CTF_FILE)
+  eval $ctf_data
+  echo "    data:"
+  for k in "${!ctf[@]}"; do
+  echo "      $k: ${ctf[$k]}"
+  done
+
+  PROCESSED_SUM_RESOLUTION=${ctf[resolution]}
+  PROCESSED_SUM_NYQUIST=${ctf[nyquist]}
 
 }
 
@@ -321,6 +341,7 @@ do_spa_pick()
   echo "    data:"
   # 11 non-particle lines
   local particles=$(wc -l ${PARTICLE_FILE} | awk '{print $1-11}')
+  PROCESSED_NUMBER_PARTICLES=$particles
   echo "      particles: " $particles
 
 }
@@ -521,7 +542,6 @@ generate_jpg()
   local input=$1
   local outdir=${2:-.}
   
-  local start=$(date +%s.%N)
   >&2 echo
 
   if [ ! -e $input ]; then
@@ -544,9 +564,6 @@ generate_jpg()
     e2proc2d.py --writejunk $input $output  1>&2
   fi
 
-  local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
-  >&2 echo "jpg(): $duration seconds"
-
   echo $output
 }
 
@@ -562,7 +579,6 @@ process_sum()
   local extension="${filename##*.}"
   local log="${output%.${extension}}.log"
   
-  local start=$(date +%s.%N)
   >&2 echo
 
   if [ ! -e $input ]; then
@@ -589,19 +605,14 @@ __AVGSTACK_EOF__
     rm -f $tmpfile
   fi
 
-  local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
-  >&2 echo "sum(): $duration seconds"
-
   echo $output
 }
 
 
 particle_pick()
 {
-
   local input=$1
 
-  local start=$(date +%s.%N)
   >&2 echo
 
   if [ ! -e $input ]; then
@@ -626,9 +637,6 @@ particle_pick()
     $cmd 1>&2
 
   fi
-
-  local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
-  >&2 echo "particle_pick(): $duration seconds"
 
   echo $output
 }
@@ -673,61 +681,70 @@ generate_preview()
   local aligned=$1
   local particles=$2
 
+  # create a preview of the image
   # create the picked preview
-  local aligned_jpg=$(generate_jpg "$aligned" /tmp)
-  local apix_size=68.16799999999999
-  local picked_preview=$(mktemp /tmp/pipeline-picked-preview-XXXXXXXX)
-  local origifs=$IFS
-  IFS=$'
+  local picked_preview=/tmp/tst.jpg
+
+  if [ -e "$picked_preview" ]; then
+    >&2 echo "particle picked preview file $picked_preview already exists..."
+  fi
+
+  if [ ! -e "$picked_preview" ]; then
+    local aligned_jpg=$(generate_jpg "$aligned" /tmp)
+    local origifs=$IFS
+    IFS=$'
 '
-  local cmd="convert -flip -negate '$aligned_jpg' "
-  for l in $(cat $particles | grep -vE '(_|\#|^ $)' ); do
-    local shape=$(echo $l | awk -v size="$apix_size" '{print "circle " $1 "," $2 "," $1 + size/2 "," $2 }')
-    cmd="${cmd}    -strokewidth 3 -stroke yellow -fill none -draw \" $shape \" "
-  done
-  cmd="${cmd}  $picked_preview"
-  IFS=$origifs
-  echo $cmd
-  eval $cmd
-  echo "PICKED: $picked_preview"
+    local cmd="convert -flip -negate '$aligned_jpg' "
+    local size=$( echo "$PARTICLE_SIZE * $APIX" | bc -l )
+    for l in $(cat $particles | grep -vE '(_|\#|^ $)' ); do
+      local shape=$(echo $l | awk -v size=$size '{print "circle " $1 "," $2 "," $1 + size/2 "," $2 }')
+      cmd="${cmd} -strokewidth 3 -stroke yellow -fill none -draw \" $shape \" "
+    done
+    cmd="${cmd}  $picked_preview"
+    IFS=$origifs
+    eval $cmd
+  fi
 
   # get a timestamp of when file was created
   local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%d %H:%M:%S" -r $aligned)
 
   # create the top half
-  SUMMED_CTF_PREVIEW=$(generate_jpg "${SUMMED_CTF_FILE}" "summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION" )
-  echo "SUMMED_CTF_PREVIEW="${SUMMED_CTF_PREVIEW}
+  SUMMED_CTF_PREVIEW=$(generate_jpg "${SUMMED_CTF_FILE}" "/tmp" )
+  #"summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION" )
+  set -xe
 
-  local top=$(mktemp /tmp/pipeline-top.XXXXXXXX)
+  local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.jpg)
+  local res="${PROCESSED_SUM_RESOLUTION}Å (${PROCESSED_SUM_NYQUIST}%)"
   convert \
     -resize '512x512^' -extent '512x512' $picked_preview \
     -flip ${SUMMED_CTF_PREVIEW} \
-    +append -font DejaVu-Sans -pointsize 28 -fill SeaGreen1 -draw 'text 8,492 "~4500 pp"' \
-    +append -font DejaVu-Sans -pointsize 28 -fill yellow -draw 'text 520,492 "'${timestamp}'"' \
-    +append -font DejaVu-Sans -pointsize 28 -fill yellow -draw 'text 854,492 "3.8Å (22%)"' \
+    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill SeaGreen1 -draw "text 8,492 \"~$PROCESSED_NUMBER_PARTICLES pp\"" \
+    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill yellow -draw "text 520,492 \"${timestamp}\"" \
+    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill yellow -draw "text 854,492 \"$res\"" \
     $top
 
-  # create the bottom half
-  ALIGNED_CTF_PREVIEW=$(generate_jpg "${ALIGNED_CTF_FILE}" "aligned/motioncor2/$MOTIONCOR2_VERSION/ctffind4/$CTFFIND4_VERSION" )
-  echo "ALIGNED_CTF_PREVIEW="${ALIGNED_CTF_PREVIEW}
+  # rm -f $picked_preview
 
-  local bottom=$(mktemp /tmp/pipeline-bottom.XXXXXXXX)
+  # create the bottom half
+  ALIGNED_CTF_PREVIEW=$(generate_jpg "${ALIGNED_CTF_FILE}" "/tmp" )
+  local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.jpg)
+  local res="${PROCESSED_ALIGN_RESOLUTION}Å (${PROCESSED_ALIGN_NYQUIST}%)"
   convert \
     -resize '512x512^' -extent '512x512' $aligned_jpg \
     ${ALIGNED_CTF_PREVIEW} \
-    +append -font DejaVu-Sans -pointsize 28 -fill orange -draw 'text 402,46 "0.412"'
-    +append -font DejaVu-Sans -pointsize 28 -fill orange -draw 'text 854,46 "3.6Å (47%)"'
+    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill orange -draw "text 402,46 \"drift / \"" \
+    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill orange -draw "text 854,46 \"$res\"" \
     $bottom
 
   # clean files
-  rm -f $aligned_jpg
+  rm -f $aligned_jpg 
 
   # create the final preview
   local outdir=previews
-  mkdir $outdir
-  local filename=$(basename -- "$input")
+  mkdir -p $outdir
+  local filename=$(basename -- "$aligned")
   local extension="${filename##*.}"
-  local output="$outdir/${filename%.${extension}}_full_sidebyside.jpg"
+  local output="$outdir/${filename%_DW.${extension}}_sidebyside.jpg"
   
   convert $top $bottom \
      -append $output
@@ -737,7 +754,7 @@ generate_preview()
 }
 
 
-parse_ctffind()
+ctffind_file()
 {
   local input=$1
 
@@ -745,25 +762,26 @@ parse_ctffind()
   local extension="${filename##*.}"
   local datafile="${input%.${extension}}.txt"
 
+  echo $datafile
+}
+
+
+parse_ctffind()
+{
+  local input=$1
+  local datafile=$(ctffind_file "$input")
+
   if [ ! -e $datafile ]; then
     >&2 echo "ctf data file $datafile does not exist"
     exit 4
   fi
-  echo "    file: $datafile"
-  echo "    data:"
-  cat $datafile | awk \
-'/# Pixel size: / { apix=$4; next } \
+  cat $datafile | awk '
+/# Pixel size: / { apix=$4; next } \
 !/# / { defocus_1=$2; defocus_2=$3; astig=$4; phase_shift=$5; cross_correlation=$6; resolution=$7; next } \
 END { \
-print "      defocus_1: " defocus_1;
-print "      defocus_2: " defocus_2;
-print "      astigmatism: " astig;
-print "      phase_shift: " phase_shift;
-print "      cross_correlation: " cross_correlation;
-print "      resolution: " resolution;
-print "      nyquist: " 2 * apix / resolution;
+  nyquist= 2 * apix / resolution;
+  print "declare -A ctf; ctf[apix]="apix " ctf[defocus_1]="defocus_1 " ctf[defocus_2]="defocus_2 " ctf[astigmatism]="astig " ctf[phase_shift]="phase_shift " ctf[cross_correlation]="cross_correlation " ctf[resolution]="resolution " ctf[nyquist]="nyquist;
 }'
-
 }
 
 parse_motioncor()
