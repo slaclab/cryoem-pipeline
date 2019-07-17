@@ -630,7 +630,6 @@ generate_file_meta()
 
 dump_file_meta()
 {
-  local out=$(generate_file_meta "$1")
   echo "      - path: $1"
   local out=$(generate_file_meta "$1")
   eval "$out"
