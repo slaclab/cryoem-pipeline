@@ -244,7 +244,7 @@ do_spa_align() {
 
   echo "  - task: align_data"
   local file=$(motioncor_file ${ALIGNED_FILE})
-  echo "    file: $file"
+  echo "    source: $file"
   echo "    data:"
   local align=$(parse_motioncor ${ALIGNED_FILE})
   eval $align
@@ -269,7 +269,7 @@ do_spa_align() {
 
   echo "  - task: ctf_align_data"
   local ctf_file=$(ctffind_file $ALIGNED_CTF_FILE)
-  echo "    file: $ctf_file"
+  echo "    source: $ctf_file"
   local ctf_data=$(parse_ctffind $ALIGNED_CTF_FILE)
   eval $ctf_data
   echo "    data:"
@@ -327,7 +327,7 @@ do_spa_sum() {
 
   echo "  - task: ctf_summed_data"
   local ctf_file=$(ctffind_file $SUMMED_CTF_FILE)
-  echo "    file: $ctf_file"
+  echo "    source: $ctf_file"
   local ctf_data=$(parse_ctffind $SUMMED_CTF_FILE)
   eval $ctf_data
   echo "    data:"
@@ -728,7 +728,6 @@ generate_preview()
   # create the top half
   SUMMED_CTF_PREVIEW=$(generate_jpg "${SUMMED_CTF_FILE}" "/tmp" )
   #"summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION" )
-  set -xe
 
   local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.jpg)
   local res="${PROCESSED_SUM_RESOLUTION}Å (${PROCESSED_SUM_NYQUIST}%)"
