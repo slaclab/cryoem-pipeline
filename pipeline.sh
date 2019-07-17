@@ -183,7 +183,7 @@ do_prepipeline()
   echo "pre-pipeline:"
 
   # other params
-  echo "  - task: input parameters"
+  echo "  - task: input"
   echo "    data:"
   echo "      apix: ${APIX}"
   echo "      fmdose: ${FMDOSE}"
@@ -206,11 +206,11 @@ do_gainref()
   if [ ! -z "$GAINREF_FILE" ]; then
     # gainref
     echo "  - task: gainref"
-    echo "    files:"
     local start=$(date +%s.%N)
     GAINREF_FILE=$(process_gainref "$GAINREF_FILE")
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
     echo "    duration: $duration"
+    echo "    files:"
     dump_file_meta "${GAINREF_FILE}"
   fi
 }
@@ -233,8 +233,10 @@ do_spa_align() {
   echo "    duration: $duration"
   echo "    files:"
   dump_file_meta "${ALIGNED_FILE}"
+  ALIGNED_DW_FILE="${ALIGNED_FILE%.mrc}_DW.mrc"
+  dump_file_meta "${ALIGNED_DW_FILE}"
 
-  echo "  - task: align data"
+  echo "  - task: align_data"
   parse_motioncor ${ALIGNED_FILE}
 
   echo "  - task: ctf"
@@ -257,7 +259,6 @@ do_spa_sum() {
 
   >&2 echo
   >&2 echo "Processing sum for micrograph $MICROGRAPH..."
-
 
   local filename=$(basename -- "$MICROGRAPH")
   local extension="${filename##*.}"
@@ -359,7 +360,7 @@ align_stack()
   # given a set of parameters, run motioncor on the input movie stack
   local input=$1
   local gainref="$2"
-  local outdir=${3:-./aligned/motioncor2/$MOTIONCOR2_VERSION}
+  local outdir=${3:-aligned/motioncor2/$MOTIONCOR2_VERSION}
   
   >&2 echo
   
@@ -387,11 +388,13 @@ align_stack()
         -Patch $PATCH \
         -Throw $THROW \
         -Trunc $TRUNC \
+        -SumRange 0 0 \
         -Iter $ITER \
         -Tol $TOL \
         -OutStack $OUTSTACK \
         -InFmMotion $INFMMOTION \
-        -Gpu $GPU
+        -Gpu $GPU \
+        -GpuMemUsage 0.95
     "
 
     align_command=$(gen_template "$cmd")
@@ -666,7 +669,7 @@ generate_preview()
   local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%d %H:%M:%S" -r $aligned)
 
   # create the top half
-  SUMMED_CTF_PREVIEW=$(generate_jpg "${SUMMED_CTF_FILE}" "./summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION" )
+  SUMMED_CTF_PREVIEW=$(generate_jpg "${SUMMED_CTF_FILE}" "summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION" )
   echo "SUMMED_CTF_PREVIEW="${SUMMED_CTF_PREVIEW}
 
   local top=$(mktemp /tmp/pipeline-top.XXXXXXXX)
@@ -679,7 +682,7 @@ generate_preview()
     $top
 
   # create the bottom half
-  ALIGNED_CTF_PREVIEW=$(generate_jpg "${ALIGNED_CTF_FILE}" "./aligned/motioncor2/$MOTIONCOR2_VERSION/ctffind4/$CTFFIND4_VERSION" )
+  ALIGNED_CTF_PREVIEW=$(generate_jpg "${ALIGNED_CTF_FILE}" "aligned/motioncor2/$MOTIONCOR2_VERSION/ctffind4/$CTFFIND4_VERSION" )
   echo "ALIGNED_CTF_PREVIEW="${ALIGNED_CTF_PREVIEW}
 
   local bottom=$(mktemp /tmp/pipeline-bottom.XXXXXXXX)
@@ -745,9 +748,25 @@ parse_motioncor()
   echo "    file: $datafile"
 
   echo "    data:"
-  cat $datafile | grep -vE '^$' | awk '!/# / { x=$2*$2; y=$3*$3; n=sqrt(x+y); print "    - "n; next }'
-
-# print $2 ", " $3 "\t>>>\t" x "\t" y "\t>>" n;
+  cat $datafile | grep -vE '^$' | awk '
+!/# / { 
+  if( $1 > 1 ){ 
+    x=$2; y=$3; 
+    dx=lastx-x; dy=lasty-y; 
+    n=sqrt((dx*dx)+(dy*dy)); 
+    drifts[$1-1]=n; 
+} lastx=$2; lasty=$3; next; } 
+END { 
+  for (i = 1; i <= length(drifts); ++i) {
+    if( i <= 5 ){ first5 += drifts[i] }
+    all += drifts[i]
+  }
+  #print "      frames: " length(drifts)+1;
+  print "      first1: " drifts[1];
+  print "      first5: " first5 / 5;
+  print "      all: " all / length(drifts);
+}'
+# print "    - "lastx "-"x" ("dx*dx")\t" lasty "-"y" ("dy*dy"):\t" n;
 
 }
 
