@@ -181,9 +181,6 @@ do_tomo()
 do_prepipeline()
 {
   echo "pre-pipeline:"
-  # input
-  echo "  - task: micrograph"
-  echo "    file: ${MICROGRAPH}"
 
   # other params
   echo "  - task: input parameters"
@@ -195,22 +192,27 @@ do_prepipeline()
   echo "      super_resolution: ${SUPERRES}"
   echo "      phase_plate: ${PHASE_PLATE}"
 
+  # input micrograph
+  echo "  - task: micrograph"
+  echo "    files:"
+  dump_file_meta "${MICROGRAPH}"
+
 }
 
 
 do_gainref()
 {
 
-  # gainref
-  echo "  - task: gainref"
-  echo "    file: ${GAINREF_FILE}"
-  local start=$(date +%s.%N)
-  GAINREF_FILE=$(process_gainref "$GAINREF_FILE")
-  local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
-  echo "    duration: $duration"
-
-
-  #generate_file_meta "$GAINREF_FILE"
+  if [ ! -z "$GAINREF_FILE" ]; then
+    # gainref
+    echo "  - task: gainref"
+    echo "    files:"
+    local start=$(date +%s.%N)
+    GAINREF_FILE=$(process_gainref "$GAINREF_FILE")
+    local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
+    echo "    duration: $duration"
+    dump_file_meta "${GAINREF_FILE}"
+  fi
 }
 
 
@@ -229,7 +231,8 @@ do_spa_align() {
   ALIGNED_FILE=$(align_stack "$MICROGRAPH" "$GAINREF_FILE") #"./aligned/motioncor2/$MOTIONCOR2_VERSION")
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
   echo "    duration: $duration"
-  echo "    file: ${ALIGNED_FILE}"
+  echo "    files:"
+  dump_file_meta "${ALIGNED_FILE}"
 
   echo "  - task: align data"
   parse_motioncor ${ALIGNED_FILE}
@@ -239,7 +242,8 @@ do_spa_align() {
   ALIGNED_CTF_FILE=$(process_ctffind "$ALIGNED_FILE" "./aligned/motioncor2/$MOTIONCOR2_VERSION/ctffind4/$CTFFIND4_VERSION")
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
   echo "    duration: $duration"
-  echo "    file: ${ALIGNED_CTF_FILE}"
+  echo "    files:"
+  dump_file_meta  "${ALIGNED_CTF_FILE}"
 
   echo "  - task: ctf data"
   parse_ctffind $ALIGNED_CTF_FILE
@@ -602,10 +606,38 @@ particle_pick()
 
 generate_file_meta()
 {
-  local md5=$(md5sum "$1" | awk '{print $1}')
-  local size=$(ls -l "$1" | cut -d " " -f5)
-  >&2 echo "md5=$md5 size=$size"
+  local file="$1"
+  if [ -h "$file" ]; then
+    file=$(realpath "$file")
+  fi
+  local md5file="$1.md5"
+  if [ -e "$md5file" ]; then
+    >&2 echo "md5 checksum file $md5file already exists..."
+  fi
+  local md5=""
+  if [[ $FORCE -eq 1 || ! -e $md5file ]]; then
+    md5=$(md5sum "$1" | tee "$md5file" | awk '{print $1}' )
+  else
+    md5=$(cat "$md5file" | cut -d ' ' -f 1)
+  fi
+  local stat=$(stat -c "%s/%y/%w" "$file")
+  local mod=$(date --utc -d "$(echo $stat | cut -d '/' -f 2)"  +%FT%TZ)
+  local create=$(echo $stat | cut -d '/' -f 3)
+  if [ "$create" == "-" ]; then create=$mod; fi
+  local size=$(echo $stat | cut -d '/' -f 1)
+  echo "file=\"$1\" checksum=$md5 size=$size modify_timestamp=$mod create_timestamp=$create"
+}
 
+dump_file_meta()
+{
+  local out=$(generate_file_meta "$1")
+  echo "      - path: $1"
+  local out=$(generate_file_meta "$1")
+  eval "$out"
+  echo "        checksum: $checksum"
+  echo "        size: $size"
+  echo "        modify_timestamp: $modify_timestamp"
+  echo "        create_timestamp: $create_timestamp"
 }
 
 generate_preview()
