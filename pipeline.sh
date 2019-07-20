@@ -6,11 +6,11 @@ IMOD_VERSION="4.9.11"
 IMOD_LOAD="imod/${IMOD_VERSION}"
 EMAN2_VERSION="20190603"
 EMAN2_LOAD="eman2/${EMAN2_VERSION}"
-MOTIONCOR2_VERSION="1.2.2"
-#MOTIONCOR2_LOAD="motioncor2-1.1.0-gcc-4.8.5-zhoi3ww"
-MOTIONCOR2_LOAD="motioncor2/${MOTIONCOR2_VERSION}"
-CTFFIND4_VERSION="4.1.13"
-#CTFFIND4_LOAD="ctffind4-4.1.10-intel-17.0.4-rhn26cm"
+MOTIONCOR2_VERSION="1.1.0"
+MOTIONCOR2_LOAD="motioncor2-1.1.0-gcc-4.8.5-zhoi3ww"
+#MOTIONCOR2_VERSION="1.2.2"
+#MOTIONCOR2_LOAD="motioncor2/${MOTIONCOR2_VERSION}"
+CTFFIND4_VERSION="4.1.10"
 CTFFIND4_LOAD="ctffind/${CTFFIND4_VERSION}"
 RELION_VERSION="3.0.4"
 RELION_LOAD="relion/${RELION_VERSION}"
@@ -166,13 +166,21 @@ do_spa()
     do_spa_pick
   fi
 
-  echo "  - task: preview"
-  local start=$(date +%s.%N)
-  local PREVIEW_FILE=$(generate_preview "$ALIGNED_DW_FILE" "$PARTICLE_FILE")
-  echo "    files:"
-  dump_file_meta "${PREVIEW_FILE}"
-  local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
-  echo "    duration: $duration"
+  if [[ "$TASK" == "preview" || "$TASK" == "all" ]]; then
+    echo "  - task: preview"
+    local start=$(date +%s.%N)
+    # need to guess filenames
+    if [ "$TASK" == "preview" ]; then
+      ALIGNED_DW_FILE=$(align_dw_file ${MICROGRAPH})
+      PARTICLE_FILE=$(particle_file ${ALIGNED_DW_FILE})
+      SUMMED_CTF_FILE=$(sum_ctf_file "${MICROGRAPH}")
+    fi
+    local PREVIEW_FILE=$(generate_preview "$ALIGNED_DW_FILE" "$PARTICLE_FILE")
+    echo "    files:"
+    dump_file_meta "${PREVIEW_FILE}"
+    local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
+    echo "    duration: $duration"
+  fi
 
 }
 
@@ -282,6 +290,15 @@ do_spa_align() {
   PROCESSED_ALIGN_ASTIGMATISM=${ctf[astigmatism]}
 }
 
+sum_ctf_file()
+{
+  local input="$1"
+  local outdir=${2:-summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION}
+  local filename=$(basename -- "$input")
+  local extension="${filename##*.}"
+  echo "$outdir/${filename%.${extension}}_sum_ctf.mrc"
+}
+
 ###
 # create the ctf and preview images for the summed stack of the MICROGRAPH. creating the sum temporarily if necessary
 ###
@@ -311,14 +328,14 @@ do_spa_sum() {
     SUMMED_FILE=$(process_sum "$MICROGRAPH" "$tmpfile" "$GAINREF_FILE")
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
     echo "    duration: $duration"
-    rm -f ${tmpfile}
 
   fi
 
   echo "  - task: ctf_summed"
   local start=$(date +%s.%N)
   if [ ! -e "$SUMMED_CTF_FILE" ]; then
-    SUMMED_CTF_FILE=$(process_ctffind "$SUMMED_FILE" "$path")
+    SUMMED_CTF_FILE=$(process_ctffind "$SUMMED_FILE" "$outdir")
+    rm -f "$SUMMED_FILE"
   fi
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
   echo "    duration: $duration"
@@ -418,6 +435,12 @@ align_file()
   echo $output
 }
 
+align_dw_file()
+{
+  local align=$(align_file "$1")
+  local output="${align%_aligned.mrc}_aligned_DW.mrc"
+  echo $output
+}
 
 align_stack()
 {
@@ -479,7 +502,7 @@ process_ctffind()
   
   >&2 echo
 
-  if [ ! -e $input ]; then
+  if [ ! -e "$input" ]; then
     >&2 echo "input micrograph $input not found"
     exit 4
   fi
@@ -589,6 +612,7 @@ process_sum()
 {
   local input=$1
   local output=$2
+  # TODO: what if no gainref?
   local gainref=$3
   local outdir=${4:-.}
   
@@ -610,6 +634,8 @@ process_sum()
   if [[ $FORCE -eq 1 || ! -e $output ]]; then
     >&2 echo "summing stack $input to $output..."
     local tmpfile=$(mktemp /tmp/pipeline-sum.XXXXXX)
+    tmpfile=/tmp/pipeline-sum.IXpzUG
+    if [ ! -e $tmpfile ]; then
     module load ${IMOD_LOAD}
     >&2 echo "avgstack $input $tmpfile /"
     avgstack > $log << __AVGSTACK_EOF__
@@ -617,18 +643,29 @@ $input
 $tmpfile
 /
 __AVGSTACK_EOF__
-    >&2 echo clip mult -n 16 $tmpfile "$gainref" $output
-    clip mult -n 16 $tmpfile "$gainref" $output  1>&2
-    rm -f $tmpfile
+    fi
+    >&2 echo clip mult -n 16 $tmpfile \'$gainref\' \'$output\'
+    module load ${IMOD_LOAD}
+    clip mult -n 16 $tmpfile "$gainref" "$output"  1>&2
+    # rm -f $tmpfile
   fi
 
   echo $output
 }
 
+particle_file()
+{
+  local filename=$(basename -- "$1")
+  local dirname=${2:-particles}
+  local extension="${filename##*.}"
+  local output="$dirname/${input%.${extension}}_autopick.star"
+  echo $output
+}
 
 particle_pick()
 {
   local input=$1
+  local dirname=${$2:-particles}
 
   >&2 echo
 
@@ -637,10 +674,7 @@ particle_pick()
     exit
   fi
 
-  local filename=$(basename -- "$input")
-  local extension="${filename##*.}"
-  local dirname='particles'
-  local output="$dirname/${input%.${extension}}_autopick.star"
+  local output=$(particle_file "$input")
 
   if [ -e $output ]; then
     >&2 echo "particle file $output already exists"
@@ -722,6 +756,7 @@ generate_preview()
     eval $cmd
   fi
 
+  set -xe
   # get a timestamp of when file was created
   local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%d %H:%M:%S" -r $aligned)
 
@@ -745,11 +780,12 @@ generate_preview()
   ALIGNED_CTF_PREVIEW=$(generate_jpg "${ALIGNED_CTF_FILE}" "/tmp" )
   local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.jpg)
   local res="${PROCESSED_ALIGN_RESOLUTION}Å (${PROCESSED_ALIGN_NYQUIST}%)"
+  local drift=$(printf "%.1f" ${PROCESSED_ALIGN_FIRST1}) "/" $(printf "%.1f" ${PROCESSED_ALIGN_FIRST5}) "/" $(printf "%.1f" ${PROCESSED_ALIGN_ALL})
   convert \
     -resize '512x512^' -extent '512x512' \
     $aligned_jpg \
     ${ALIGNED_CTF_PREVIEW} \
-    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill orange -draw "text 402,46 \"${PROCESSED_ALIGN_FIRST1} / ${PROCESSED_ALIGN_FIRST5} / ${PROCESSED_ALIGN_ALL}\"" \
+    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill orange -draw "text 402,46 \"$drift\"" \
     +append -font DejaVu-Sans-Condensed -pointsize 28 -fill orange -draw "text 854,46 \"$res\"" \
     $bottom
 
