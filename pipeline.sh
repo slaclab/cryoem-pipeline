@@ -42,8 +42,8 @@ GPU=${GPU:-0}
 
 # PICKING
 PARTICLE_SIZE=${PARTICLE_SIZE:-150}
-PARTICLE_SIZE_MIN=${PARTICLE_SIZE_MIN:-$(echo $PARTICLE_SIZE*0.8 | bc -l)}
-PARTICLE_SIZE_MAX=${PARTICLE_SIZE_MAX:-$(echo $PARTICLE_SIZE*1.2 | bc -l)}
+PARTICLE_SIZE_MIN=${PARTICLE_SIZE_MIN:-$(echo $PARTICLE_SIZE | awk '{ print $1*0.8 }')}
+PARTICLE_SIZE_MAX=${PARTICLE_SIZE_MAX:-$(echo $PARTICLE_SIZE | awk '{ print $1*1.2 }')}
 
 # usage
 usage() {
@@ -470,7 +470,7 @@ align_stack()
         -FmDose $FMDOSE \
         -kV $KV \
         -Bft $BFT \
-        -PixSize $(if [ $SUPERRES -eq 1 ]; then echo $APIX/2 | bc -l; else echo $APIX; fi) \
+        -PixSize $(if [ $SUPERRES -eq 1 ]; then echo $APIX | awk '{ print $1/2 }' else echo $APIX; fi) \
         -FtBin $(if [ $SUPERRES -eq 1 ]; then echo 2; else echo 1; fi) \
         -Patch $PATCH \
         -Throw $THROW \
@@ -514,7 +514,7 @@ process_ctffind()
 
   local apix=${APIX}
   if [[ $SUPERRES -eq 1 ]]; then
-    apix=$(echo $apix/2 | bc -l)
+    apix=$(echo $apix | awk '{ print $1/2 }')
   fi
 
   if [ -e $output ]; then
