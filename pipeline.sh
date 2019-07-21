@@ -122,7 +122,7 @@ main() {
     usage
     exit 1
   fi
-  if [ -z $FMDOSE ]; then
+  if [ -z $FMDOSE && [ "$TASK" == "all" || "$TASK" == "align" || "$TASK" == "sum" ]; then
     echo "Need fmdose [-d|--fmdose] to continue..."
     usage
     exit 1
