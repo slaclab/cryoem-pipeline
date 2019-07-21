@@ -55,6 +55,7 @@ Mandatory Arguments:
 
 Optional Arguments:
   [-g|--gainref GAINREF_FILE]  use specificed gain reference file
+  [-b|--basename STR]          output files names with specified STR as prefix
   [-k|--kev INT]               input micrograph was taken with INT keV microscope
   [-s|--superres]              input micrograph was taken in super-resolution mode (so we should half the number of pixels)
   [-p|--phase-plate]            input microgrpah was taken using a phase plate (so we should calculate the phase)
@@ -76,6 +77,7 @@ main() {
     case "$arg" in
       "--help")    set -- "$@" "-h";;
       "--gainref") set -- "$@" "-g";;
+      "--basename") set -- "$@" "-b";;
       "--force")   set -- "$@" "-F";;
       "--apix")    set -- "$@" "-a";;
       "--fmdose")  set -- "$@" "-d";;
@@ -90,9 +92,10 @@ main() {
    esac
   done
 
-  while getopts "Fhspm:t:g:a:d:k:e:" opt; do
+  while getopts "Fhspm:t:g:b:a:d:k:e:" opt; do
     case "$opt" in
     g) GAINREF_FILE="$OPTARG";;
+    b) BASENAME="$OPTARG";;
     a) APIX="$OPTARG";;
     d) FMDOSE="$OPTARG";;
     k) KV="$OPTARG";;
@@ -237,7 +240,6 @@ do_spa_align() {
 
   >&2 echo
   >&2 echo "Processing align for micrograph $MICROGRAPH..."
-
 
   echo "  - task: align"
   local start=$(date +%s.%N)
@@ -432,7 +434,11 @@ process_gainref()
 
 align_file()
 {
-  local filename=$(basename -- "$1")
+  local input="$1"
+  if [ ! -z "${BASENAME}" ]; then
+    input="${BASENAME}"
+  fi
+  local filename=$(basename -- "$input")
   local outdir=${2:-aligned/motioncor2/$MOTIONCOR2_VERSION}
   local extension="${filename##*.}"
   local output="$outdir/${filename%.${extension}}_aligned.mrc"
