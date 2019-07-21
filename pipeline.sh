@@ -122,7 +122,7 @@ main() {
     usage
     exit 1
   fi
-  if [ -z $FMDOSE && [ "$TASK" == "all" || "$TASK" == "align" || "$TASK" == "sum" ]; then
+  if [[ -z $FMDOSE && ( "$TASK" == "all" || "$TASK" == "align" || "$TASK" == "sum" ) ]]; then
     echo "Need fmdose [-d|--fmdose] to continue..."
     usage
     exit 1
@@ -174,10 +174,15 @@ do_spa()
     # need to guess filenames
     if [ "$TASK" == "preview" ]; then
       ALIGNED_DW_FILE=$(align_dw_file ${MICROGRAPH})
+      #echo "ALIGNED_DW_FILE: $ALIGNED_DW_FILE"
+      ALIGNED_CTF_FILE=$(align_ctf_file "${MICROGRAPH}")
+      #echo "ALIGNED_CTF_FILE: $ALIGNED_CTF_FILE"
       PARTICLE_FILE=$(particle_file ${ALIGNED_DW_FILE})
+      #echo "PARTICLE_FILE: $PARTICLE_FILE"
       SUMMED_CTF_FILE=$(sum_ctf_file "${MICROGRAPH}")
+      #echo "SUMMED_CTF_FILE: $SUMMED_CTF_FILE"
     fi
-    local PREVIEW_FILE=$(generate_preview "$ALIGNED_DW_FILE" "$PARTICLE_FILE")
+    local PREVIEW_FILE=$(generate_preview)
     echo "    files:"
     dump_file_meta "${PREVIEW_FILE}"
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
@@ -299,10 +304,25 @@ do_spa_align() {
 sum_ctf_file()
 {
   local input="$1"
+  if [ ! -z "${BASENAME}" ]; then
+    input="${BASENAME}"
+  fi
+  local extension="${input##*.}"
   local outdir=${2:-summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION}
-  local filename=$(basename -- "$input")
-  local extension="${filename##*.}"
-  echo "$outdir/${filename%.${extension}}_sum_ctf.mrc"
+  local output="$outdir/${input%.${extension}}_sum_ctf.mrc"
+  echo $output
+}
+
+align_ctf_file()
+{
+  local input="$1"
+  if [ ! -z "${BASENAME}" ]; then
+    input="${BASENAME}"
+  fi
+  local extension="${input##*.}"
+  local outdir=${2:-aligned/motioncor2/$MOTIONCOR2_VERSION/ctffind4/$CTFFIND4_VERSION}
+  local output="$outdir/${input%.${extension}}_aligned_ctf.mrc"
+  echo $output
 }
 
 ###
@@ -313,14 +333,7 @@ do_spa_sum() {
   >&2 echo
   >&2 echo "Processing sum for micrograph $MICROGRAPH..."
 
-  local filename=$(basename -- "$MICROGRAPH")
-  if [ ! -z "${BASENAME}" ]; then
-    filename="${BASENAME}"
-  fi
-  local extension="${filename##*.}"
-
-  local outdir=summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION
-  SUMMED_CTF_FILE="$outdir/${filename%.${extension}}_sum_ctf.mrc"
+  SUMMED_CTF_FILE=$(summed_ctf_file "$MICROGRAPH")
   # check for the SUMMED_CTF_FILE, do if not exists
   if [ -e $SUMMED_CTF_FILE ]; then
     >&2 echo
@@ -368,7 +381,7 @@ do_spa_pick()
   # use DW file?
   >&2 echo
 
-  if [ ! -z $ALIGNED_DW_FILE ]; then
+  if [ -z $ALIGNED_DW_FILE ]; then
     ALIGNED_DW_FILE=$(align_dw_file "$MICROGRAPH")
   fi 
 
@@ -446,6 +459,7 @@ align_file()
   local outdir=${2:-aligned/motioncor2/$MOTIONCOR2_VERSION}
   local extension="${filename##*.}"
   local output="$outdir/${filename%.${extension}}_aligned.mrc"
+
   echo $output
 }
 
@@ -666,10 +680,11 @@ __AVGSTACK_EOF__
 
 particle_file()
 {
-  local filename=$(basename -- "$1")
+  local input="$1"
   local dirname=${2:-particles}
-  local extension="${filename##*.}"
+  local extension="${input##*.}"
   local output="$dirname/${input%.${extension}}_autopick.star"
+  >&2 echo "OUTPUT $output"
   echo $output
 }
 
@@ -745,8 +760,14 @@ dump_file_meta()
 
 generate_preview()
 {
-  local aligned=$1
-  local particles=$2
+  local outdir=${1:-previews}
+  mkdir -p $outdir
+  local filename=$(basename -- "$MICROGRAPH")
+  if [ ! -z ${BASENAME} ]; then
+    filename="${BASENAME}_sidebyside.jpg"
+  fi
+  local extension="${filename##*.}"
+  local output="$outdir/${filename}"
 
   # create a preview of the image
   # create the picked preview
@@ -756,14 +777,22 @@ generate_preview()
     >&2 echo "particle picked preview file $picked_preview already exists..."
   fi
 
-  local aligned_jpg=$(generate_jpg "$aligned" /tmp)
+  if [ ! -e "$ALIGNED_DW_FILE" ]; then
+    >&2 echo "aligned file $ALIGNED_DW_FILE not found..."
+    exit 4
+  fi
+  local aligned_jpg=$(generate_jpg "$ALIGNED_DW_FILE" /tmp)
+  if [ ! -e "$PARTICLE_FILE" ]; then
+    >&2 echo "particle file $PARTICLE_FILE not found..."
+    exit 4
+  fi
   if [ ! -e "$picked_preview" ]; then
     local origifs=$IFS
     IFS=$'
 '
     local cmd="convert -flip -negate '$aligned_jpg' "
     local size=$( echo "$PARTICLE_SIZE * $APIX" | bc -l )
-    for l in $(cat $particles | grep -vE '(_|\#|^ $)' ); do
+    for l in $(cat $PARTICLE_FILE | grep -vE '(_|\#|^ $)' ); do
       local shape=$(echo $l | awk -v size=$size '{print "circle " $1 "," $2 "," $1 + size/2 "," $2 }')
       cmd="${cmd} -strokewidth 3 -stroke yellow -fill none -draw \" $shape \" "
     done
@@ -772,15 +801,18 @@ generate_preview()
     eval $cmd
   fi
 
-  set -xe
   # get a timestamp of when file was created
-  local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%d %H:%M:%S" -r $aligned)
+  local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%d %H:%M:%S" -r ${MICROGRAPH})
 
   # create the top half
+  if [ ! -e "$SUMMED_CTF_FILE" ]; then
+    >&2 echo "summed ctf file $SUMMED_CTF_FILE not found..."
+    exit 4
+  fi
   SUMMED_CTF_PREVIEW=$(generate_jpg "${SUMMED_CTF_FILE}" "/tmp" )
-  #"summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION" )
 
   local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.jpg)
+  >&2 echo "GENERATE TOP $top from $SUMMED_CTF_PREVIEW and $picked_preview"
   local res="${PROCESSED_SUM_RESOLUTION}Å (${PROCESSED_SUM_NYQUIST}%)"
   convert \
     -resize '512x512^' -extent '512x512' $picked_preview \
@@ -793,10 +825,15 @@ generate_preview()
   # rm -f $picked_preview
 
   # create the bottom half
+  if [ ! -e "$ALIGNED_CTF_FILE" ]; then
+    >&2 echo "aligned ctf file $ALIGNED_CTF_FILE not found..."
+    exit 4
+  fi
   ALIGNED_CTF_PREVIEW=$(generate_jpg "${ALIGNED_CTF_FILE}" "/tmp" )
   local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.jpg)
-  local res="${PROCESSED_ALIGN_RESOLUTION}Å (${PROCESSED_ALIGN_NYQUIST}%)"
-  local drift=$(printf "%.1f" ${PROCESSED_ALIGN_FIRST1}) "/" $(printf "%.1f" ${PROCESSED_ALIGN_FIRST5}) "/" $(printf "%.1f" ${PROCESSED_ALIGN_ALL})
+  local res="${PROCESSED_ALIGN_RESOLUTION:-0.0}Å (${PROCESSED_ALIGN_NYQUIST:-0.0}%)"
+  local drift="$(printf "%.1f" ${PROCESSED_ALIGN_FIRST1:-0.0}) "/" $(printf "%.1f" ${PROCESSED_ALIGN_FIRST5:-0.0}) "/" $(printf "%.1f" ${PROCESSED_ALIGN_ALL:-0.0})"
+  >&2 echo "RES: $res DRIFT: $drift"
   convert \
     -resize '512x512^' -extent '512x512' \
     $aligned_jpg \
@@ -809,11 +846,14 @@ generate_preview()
   rm -f $aligned_jpg 
 
   # create the final preview
-  local outdir=previews
-  mkdir -p $outdir
-  local filename=$(basename -- "$aligned")
-  local extension="${filename##*.}"
-  local output="$outdir/${filename%_DW.${extension}}_sidebyside.jpg"
+  #local outdir=previews
+  #mkdir -p $outdir
+  #local filename=$(basename -- "$MICROGRAPH")
+  #if [ ! -z ${BASENAME} ]; then
+  #  filename="${BASENAME}_sidebyside.jpg"
+  #fi
+  #local extension="${filename##*.}"
+  #local output="$outdir/${filename}"
   convert $top $bottom \
      -append $output
   rm -f $top $bottom
