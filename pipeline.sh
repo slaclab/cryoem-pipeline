@@ -1,6 +1,5 @@
 #!/bin/bash -e
 
-
 # module loads for programs
 IMOD_VERSION="4.9.11"
 IMOD_LOAD="imod/${IMOD_VERSION}"
@@ -362,6 +361,11 @@ do_spa_pick()
 {
   # use DW file?
   >&2 echo
+
+  if [ -z $ALIGNED_DW_FILE ]; then
+    ALIGNED_DW_FILE=$(align_dw_file "$MICROGRAPH")
+  fi 
+
   >&2 echo "Processing particle picking for micrograph $ALIGNED_DW_FILE..."
 
   echo "  - task: particle_pick"
@@ -470,7 +474,7 @@ align_stack()
         -FmDose $FMDOSE \
         -kV $KV \
         -Bft $BFT \
-        -PixSize $(if [ $SUPERRES -eq 1 ]; then echo $APIX | awk '{ print $1/2 }' else echo $APIX; fi) \
+        -PixSize $(echo $APIX | awk -v superres=$SUPERRES '{ if( superres=="1" ){ print $1/2 }else{ print $1 } }') \
         -FtBin $(if [ $SUPERRES -eq 1 ]; then echo 2; else echo 1; fi) \
         -Patch $PATCH \
         -Throw $THROW \
@@ -665,13 +669,13 @@ particle_file()
 particle_pick()
 {
   local input=$1
-  local dirname=${$2:-particles}
+  local dirname=${2:-particles}
 
   >&2 echo
 
   if [ ! -e $input ]; then
     >&2 echo "input micrograph $input not found"
-    exit
+    exit 4
   fi
 
   local output=$(particle_file "$input")
@@ -682,6 +686,7 @@ particle_pick()
   if [[ $FORCE -eq 1 || ! -e $output ]]; then
 
     >&2 echo "particle picking from $input to $output..."
+    >&2  echo module load ${RELION_LOAD}
     module load ${RELION_LOAD}
     local cmd="relion_autopick --i $input --odir $dirname/ --pickname autopick --LoG  --LoG_diam_min $PARTICLE_SIZE_MIN --LoG_diam_max $PARTICLE_SIZE_MAX --angpix $APIX --shrink 0 --lowpass 15 --LoG_adjust_threshold -0.1"
     >&2 echo $cmd
@@ -697,6 +702,10 @@ generate_file_meta()
   local file="$1"
   if [ -h "$file" ]; then
     file=$(realpath "$file")
+  fi
+  if [ ! -e "$file" ]; then
+    >&2 echo "file $file does not exist!"
+    exit 4
   fi
   local md5file="$1.md5"
   if [ -e "$md5file" ]; then
@@ -870,6 +879,7 @@ END {
 
 }
 
+set -e
 main "$@"
 
 
