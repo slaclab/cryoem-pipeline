@@ -270,7 +270,12 @@ do_spa_align() {
 
   echo "  - task: ctf_align"
   local start=$(date +%s.%N)
-  ALIGNED_CTF_FILE=$(process_ctffind "$ALIGNED_FILE" "aligned/motioncor2/$MOTIONCOR2_VERSION/ctffind4/$CTFFIND4_VERSION")
+  # we always bin down the aligned file if superres, so we need to prevent the ctf from using the wrong apix value
+  local orig_superres=${SUPERRES}
+  SUPERRES=0
+  local outdir="aligned/motioncor2/$MOTIONCOR2_VERSION/ctffind4/$CTFFIND4_VERSION"
+  ALIGNED_CTF_FILE=$(process_ctffind "$ALIGNED_FILE" "$outdir")
+  SUPERRES=${orig_superres}
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
   echo "    duration: $duration"
   echo "    files:"
@@ -309,6 +314,9 @@ do_spa_sum() {
   >&2 echo "Processing sum for micrograph $MICROGRAPH..."
 
   local filename=$(basename -- "$MICROGRAPH")
+  if [ ! -z "${BASENAME}" ]; then
+    filename="${BASENAME}"
+  fi
   local extension="${filename##*.}"
 
   local outdir=summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION
@@ -317,19 +325,15 @@ do_spa_sum() {
   if [ -e $SUMMED_CTF_FILE ]; then
     >&2 echo
     >&2 echo "sum ctf file $SUMMED_CTF_FILE already exists"
-    #>&2 echo "SUMMED_CTF_FILE="${SUMMED_CTF_FILE}
   fi
 
   if [[ $FORCE -eq 1 || ! -e $SUMMED_CTF_FILE ]]; then
-    #local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
-    #echo "    duration: $duration"
     echo "  - task: sum"
     local start=$(date +%s.%N)
     local tmpfile="/tmp/${filename%.${extension}}_sum.mrc"
     SUMMED_FILE=$(process_sum "$MICROGRAPH" "$tmpfile" "$GAINREF_FILE")
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
     echo "    duration: $duration"
-
   fi
 
   echo "  - task: ctf_summed"
@@ -364,7 +368,7 @@ do_spa_pick()
   # use DW file?
   >&2 echo
 
-  if [ -z $ALIGNED_DW_FILE ]; then
+  if [ ! -z $ALIGNED_DW_FILE ]; then
     ALIGNED_DW_FILE=$(align_dw_file "$MICROGRAPH")
   fi 
 
@@ -644,8 +648,6 @@ process_sum()
   if [[ $FORCE -eq 1 || ! -e $output ]]; then
     >&2 echo "summing stack $input to $output..."
     local tmpfile=$(mktemp /tmp/pipeline-sum.XXXXXX)
-    tmpfile=/tmp/pipeline-sum.IXpzUG
-    if [ ! -e $tmpfile ]; then
     module load ${IMOD_LOAD}
     >&2 echo "avgstack $input $tmpfile /"
     avgstack > $log << __AVGSTACK_EOF__
@@ -653,11 +655,10 @@ $input
 $tmpfile
 /
 __AVGSTACK_EOF__
-    fi
     >&2 echo clip mult -n 16 $tmpfile \'$gainref\' \'$output\'
     module load ${IMOD_LOAD}
     clip mult -n 16 $tmpfile "$gainref" "$output"  1>&2
-    # rm -f $tmpfile
+    rm -f $tmpfile
   fi
 
   echo $output
