@@ -13,6 +13,8 @@ CTFFIND4_VERSION="4.1.10"
 CTFFIND4_LOAD="ctffind/${CTFFIND4_VERSION}"
 RELION_VERSION="3.0.4"
 RELION_LOAD="relion/${RELION_VERSION}"
+IMAGEMAGICK_VERSION="6.8.9"
+IMAGEMAGICK_LOAD="imagemagick/$IMAGEMAGICK_VERSION"
 
 # GENERATE
 # force redo of all files
@@ -299,6 +301,7 @@ do_spa_align() {
   PROCESSED_ALIGN_RESOLUTION=${ctf[resolution]}
   PROCESSED_ALIGN_NYQUIST=${ctf[nyquist]}
   PROCESSED_ALIGN_ASTIGMATISM=${ctf[astigmatism]}
+  PROCESSED_ALIGN_CROSS_CORRELATION=${ctf[cross_correlation]}
 }
 
 sum_ctf_file()
@@ -684,7 +687,6 @@ particle_file()
   local dirname=${2:-particles}
   local extension="${input##*.}"
   local output="$dirname/${input%.${extension}}_autopick.star"
-  >&2 echo "OUTPUT $output"
   echo $output
 }
 
@@ -734,6 +736,7 @@ generate_file_meta()
     >&2 echo "md5 checksum file $md5file already exists..."
   fi
   local md5=""
+  >&2 echo "calculating checksum and stat for $file..."
   if [[ $FORCE -eq 1 || ! -e $md5file ]]; then
     md5=$(md5sum "$1" | tee "$md5file" | awk '{print $1}' )
   else
@@ -771,7 +774,8 @@ generate_preview()
 
   # create a preview of the image
   # create the picked preview
-  local picked_preview=/tmp/tst.jpg
+  #local picked_preview=/tmp/tst.jpg
+  local picked_preview=$(mktemp /tmp/pipeline-picked-XXXXXXXX.jpg)
 
   if [ -e "$picked_preview" ]; then
     >&2 echo "particle picked preview file $picked_preview already exists..."
@@ -786,20 +790,31 @@ generate_preview()
     >&2 echo "particle file $PARTICLE_FILE not found..."
     exit 4
   fi
-  if [ ! -e "$picked_preview" ]; then
+
+  module load ${IMAGEMAGICK_LOAD}
+
+  #if [ ! -e "$picked_preview" ]; then
     local origifs=$IFS
     IFS=$'
 '
-    local cmd="convert -flip -negate '$aligned_jpg' "
-    local size=$( echo "$PARTICLE_SIZE * $APIX" | bc -l )
+    local cmd="convert -flip -negate '$aligned_jpg' -strokewidth 3 -stroke yellow -fill none "
+    local size=$( echo "$PARTICLE_SIZE * $APIX" | awk '{ print $1 }' )
+    local i=0
     for l in $(cat $PARTICLE_FILE | grep -vE '(_|\#|^ $)' ); do
       local shape=$(echo $l | awk -v size=$size '{print "circle " $1 "," $2 "," $1 + size/2 "," $2 }')
-      cmd="${cmd} -strokewidth 3 -stroke yellow -fill none -draw \" $shape \" "
+      #cmd="${cmd} -strokewidth 3 -stroke yellow -fill none -draw \" $shape \" "
+      cmd="${cmd} -draw \"$shape\" "
+      i=$((i+1))
+      #if [ $i -gt 10 ]; then
+      #  break;
+      #fi
     done
     cmd="${cmd}  $picked_preview"
     IFS=$origifs
+    #>&2 echo $cmd
     eval $cmd
-  fi
+  #fi
+  PROCESSED_NUMBER_PARTICLES=${PROCESSED_NUMBER_PARTICLES:-$i}
 
   # get a timestamp of when file was created
   local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%d %H:%M:%S" -r ${MICROGRAPH})
@@ -812,17 +827,17 @@ generate_preview()
   SUMMED_CTF_PREVIEW=$(generate_jpg "${SUMMED_CTF_FILE}" "/tmp" )
 
   local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.jpg)
-  >&2 echo "GENERATE TOP $top from $SUMMED_CTF_PREVIEW and $picked_preview"
-  local res="${PROCESSED_SUM_RESOLUTION}Å (${PROCESSED_SUM_NYQUIST}%)"
+  local res="$(printf '%.1f' ${PROCESSED_SUM_RESOLUTION:-0.0})Å ($(printf '%.1f' ${PROCESSED_SUM_NYQUIST:-0.0})%)"
+  #>&2 echo "ctf res $res"
   convert \
     -resize '512x512^' -extent '512x512' $picked_preview \
     -flip ${SUMMED_CTF_PREVIEW} \
-    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill SeaGreen1 -draw "text 8,492 \"~$PROCESSED_NUMBER_PARTICLES pp\"" \
-    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill yellow -draw "text 520,492 \"${timestamp}\"" \
-    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill yellow -draw "text 854,492 \"$res\"" \
+    +append -font Helvetica-Narrow -pointsize 28 -fill SeaGreen1 -draw "text 8,502 \"~$PROCESSED_NUMBER_PARTICLES pp\"" \
+    +append -font Helvetica-Narrow -pointsize 28 -fill yellow -draw "text 520,502 \"${timestamp}\"" \
+    +append -font Helvetica-Narrow -pointsize 28 -fill yellow -draw "text 854,502 \"$res\"" \
     $top
 
-  # rm -f $picked_preview
+  rm -f $picked_preview
 
   # create the bottom half
   if [ ! -e "$ALIGNED_CTF_FILE" ]; then
@@ -831,29 +846,22 @@ generate_preview()
   fi
   ALIGNED_CTF_PREVIEW=$(generate_jpg "${ALIGNED_CTF_FILE}" "/tmp" )
   local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.jpg)
-  local res="${PROCESSED_ALIGN_RESOLUTION:-0.0}Å (${PROCESSED_ALIGN_NYQUIST:-0.0}%)"
-  local drift="$(printf "%.1f" ${PROCESSED_ALIGN_FIRST1:-0.0}) "/" $(printf "%.1f" ${PROCESSED_ALIGN_FIRST5:-0.0}) "/" $(printf "%.1f" ${PROCESSED_ALIGN_ALL:-0.0})"
-  >&2 echo "RES: $res DRIFT: $drift"
+  local res="$(printf '%.1f' ${PROCESSED_ALIGN_RESOLUTION:-0.0})Å ($(printf '%.1f' ${PROCESSED_ALIGN_NYQUIST:-0.0})%)"
+  local ctf="cs $(printf '%.2f' ${PROCESSED_ALIGN_ASTIGMATISM:-0.0}) cc $(printf '%.2f' ${PROCESSED_ALIGN_CROSS_CORRELATION:-0.0})"
+  local drift="$(printf "%.2f" ${PROCESSED_ALIGN_FIRST1:-0.0}) "/" $(printf "%.2f" ${PROCESSED_ALIGN_FIRST5:-0.0}) "/" $(printf "%.2f" ${PROCESSED_ALIGN_ALL:-0.0})"
+ # >&2 echo "RES: $res DRIFT: $drift"
   convert \
     -resize '512x512^' -extent '512x512' \
     $aligned_jpg \
     ${ALIGNED_CTF_PREVIEW} \
-    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill orange -draw "text 402,46 \"$drift\"" \
-    +append -font DejaVu-Sans-Condensed -pointsize 28 -fill orange -draw "text 854,46 \"$res\"" \
+    +append -font Helvetica-Narrow -pointsize 28 -fill orange -draw "text 334,30 \"$drift\"" \
+    +append -font Helvetica-Narrow -pointsize 28 -fill orange -draw "text 524,30 \"$ctf\"" \
+    +append -font Helvetica-Narrow -pointsize 28 -fill orange -draw "text 854,30 \"$res\"" \
     $bottom
 
   # clean files
   rm -f $aligned_jpg 
 
-  # create the final preview
-  #local outdir=previews
-  #mkdir -p $outdir
-  #local filename=$(basename -- "$MICROGRAPH")
-  #if [ ! -z ${BASENAME} ]; then
-  #  filename="${BASENAME}_sidebyside.jpg"
-  #fi
-  #local extension="${filename##*.}"
-  #local output="$outdir/${filename}"
   convert $top $bottom \
      -append $output
   rm -f $top $bottom
