@@ -189,6 +189,7 @@ do_spa()
     dump_file_meta "${PREVIEW_FILE}"
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
     echo "    duration: $duration"
+    echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
   fi
 
 }
@@ -234,6 +235,7 @@ do_gainref()
     GAINREF_FILE=$(process_gainref "$GAINREF_FILE")
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
     echo "    duration: $duration"
+    echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
     echo "    files:"
     dump_file_meta "${GAINREF_FILE}"
   fi
@@ -253,6 +255,7 @@ do_spa_align() {
   ALIGNED_FILE=$(align_stack "$MICROGRAPH" "$GAINREF_FILE") #"./aligned/motioncor2/$MOTIONCOR2_VERSION")
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
   echo "    duration: $duration"
+  echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
   echo "    files:"
   dump_file_meta "${ALIGNED_FILE}"
   ALIGNED_DW_FILE="${ALIGNED_FILE%.mrc}_DW.mrc"
@@ -285,6 +288,7 @@ do_spa_align() {
   SUPERRES=${orig_superres}
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
   echo "    duration: $duration"
+  echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
   echo "    files:"
   dump_file_meta  "${ALIGNED_CTF_FILE}"
 
@@ -350,6 +354,7 @@ do_spa_sum() {
     SUMMED_FILE=$(process_sum "$MICROGRAPH" "$tmpfile" "$GAINREF_FILE")
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
     echo "    duration: $duration"
+    echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
   fi
 
   echo "  - task: ctf_summed"
@@ -360,6 +365,7 @@ do_spa_sum() {
   fi
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
   echo "    duration: $duration"
+  echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
   echo "    files:"
   dump_file_meta "${SUMMED_CTF_FILE}"
 
@@ -395,6 +401,7 @@ do_spa_pick()
   PARTICLE_FILE=$(particle_pick "$ALIGNED_DW_FILE")
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
   echo "    duration: $duration"
+  echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
   echo "    files:"
   dump_file_meta "${PARTICLE_FILE}"
 
