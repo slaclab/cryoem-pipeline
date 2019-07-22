@@ -237,7 +237,7 @@ do_gainref()
 
   if [ ! -z "$GAINREF_FILE" ]; then
     # gainref
-    echo "  - task: gainref"
+    echo "  - task: convert_gainref"
     local start=$(date +%s.%N)
     GAINREF_FILE=$(process_gainref "$GAINREF_FILE")
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
@@ -257,7 +257,7 @@ do_spa_align() {
   >&2 echo
   >&2 echo "Processing align for micrograph $MICROGRAPH..."
 
-  echo "  - task: align"
+  echo "  - task: align_stack"
   local start=$(date +%s.%N)
   ALIGNED_FILE=$(align_stack "$MICROGRAPH" "$GAINREF_FILE") #"./aligned/motioncor2/$MOTIONCOR2_VERSION")
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
