@@ -21,6 +21,7 @@ IMAGEMAGICK_LOAD="imagemagick/$IMAGEMAGICK_VERSION"
 MODE=${MODE:-spa} # spa | tomo
 TASK=${TASK:-all}
 FORCE=${FORCE:-0}
+NO_PREAMBLE=${NO_PREAMBLE:-0}
 
 # SCOPE PARAMS
 CS=${CS:-2.7}
@@ -146,12 +147,18 @@ main() {
 
 do_spa()
 {
-  do_prepipeline
 
-  if [[ "$TASK" == "align" || "$TASK" == "sum" || "$TASK" == "all" ]]; then
-    do_gainref
+  if [ ${NO_PREAMBLE} -eq 0  ]; then
+    do_prepipeline
+
+    if [[ "$TASK" == "align" || "$TASK" == "sum" || "$TASK" == "all" ]]; then
+      do_gainref
+    fi
+  else
+    # still need to determine correct gainref
+    GAINREF_FILE=$(process_gainref "$GAINREF_FILE")
   fi
- 
+
   # start doing something!
   echo "single_particle_analysis:"
 
@@ -340,7 +347,7 @@ do_spa_sum() {
   >&2 echo
   >&2 echo "Processing sum for micrograph $MICROGRAPH..."
 
-  SUMMED_CTF_FILE=$(summed_ctf_file "$MICROGRAPH")
+  SUMMED_CTF_FILE=$(sum_ctf_file "$MICROGRAPH")
   # check for the SUMMED_CTF_FILE, do if not exists
   if [ -e $SUMMED_CTF_FILE ]; then
     >&2 echo
