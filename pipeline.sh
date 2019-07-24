@@ -29,6 +29,7 @@ KV=${KV:-300}
 APIX=${APIX}
 SUPERRES=${SUPERRES:-0}
 PHASE_PLATE=${PHASE_PLATE:-0}
+AMPLITUDE_CONTRAST=${AMPLITUDE_CONTRAST:-0.1}
 
 # MOTIONCOR2 PARAMETERS
 BFT=${BFT:-150}
@@ -156,7 +157,10 @@ do_spa()
     fi
   else
     # still need to determine correct gainref
+    local force=${FORCE}
+    FORCE=0
     GAINREF_FILE=$(process_gainref "$GAINREF_FILE")
+    FORCE=$force
   fi
 
   # start doing something!
@@ -221,6 +225,7 @@ do_prepipeline()
   echo "      fmdose: ${FMDOSE}"
   echo "      astigmatism: ${CS}"
   echo "      kev: ${KV}"
+  echo "      amplitude_contrast: ${AMPLITUDE_CONTRAST}"
   echo "      super_resolution: ${SUPERRES}"
   echo "      phase_plate: ${PHASE_PLATE}"
 
@@ -310,7 +315,7 @@ do_spa_align() {
   done
 
   PROCESSED_ALIGN_RESOLUTION=${ctf[resolution]}
-  PROCESSED_ALIGN_NYQUIST=${ctf[nyquist]}
+  PROCESSED_ALIGN_RESOLUTION_PERFORMANCE=${ctf[resolution_performance]}
   PROCESSED_ALIGN_ASTIGMATISM=${ctf[astigmatism]}
   PROCESSED_ALIGN_CROSS_CORRELATION=${ctf[cross_correlation]}
 }
@@ -357,7 +362,8 @@ do_spa_sum() {
   if [[ $FORCE -eq 1 || ! -e $SUMMED_CTF_FILE ]]; then
     echo "  - task: sum"
     local start=$(date +%s.%N)
-    local tmpfile="/tmp/${filename%.${extension}}_sum.mrc"
+    local file=$(basename -- "$SUMMED_CTF_FILE")
+    local tmpfile="/tmp/${file%_ctf.mrc}.mrc"
     SUMMED_FILE=$(process_sum "$MICROGRAPH" "$tmpfile" "$GAINREF_FILE")
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
     echo "    duration: $duration"
@@ -367,8 +373,9 @@ do_spa_sum() {
   echo "  - task: ctf_summed"
   local start=$(date +%s.%N)
   if [ ! -e "$SUMMED_CTF_FILE" ]; then
+    local outdir=$(dirname "$SUMMED_CTF_FILE")
     SUMMED_CTF_FILE=$(process_ctffind "$SUMMED_FILE" "$outdir")
-    rm -f "$SUMMED_FILE"
+    #rm -f "$SUMMED_FILE"
   fi
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
   echo "    duration: $duration"
@@ -387,7 +394,7 @@ do_spa_sum() {
   done
 
   PROCESSED_SUM_RESOLUTION=${ctf[resolution]}
-  PROCESSED_SUM_NYQUIST=${ctf[nyquist]}
+  PROCESSED_SUM_RESOLUTION_PERFORMANCE=${ctf[resolution_performance]}
 
 }
 
@@ -659,7 +666,7 @@ process_sum()
   local output=$2
   # TODO: what if no gainref?
   local gainref=$3
-  local outdir=${4:-.}
+  local outdir=${4:-.} #-$(sum_ctf_file ${MICROGRAPH})}
   
   local filename=$(basename -- "$output")
   local extension="${filename##*.}"
@@ -689,7 +696,7 @@ __AVGSTACK_EOF__
     >&2 echo clip mult -n 16 $tmpfile \'$gainref\' \'$output\'
     module load ${IMOD_LOAD}
     clip mult -n 16 $tmpfile "$gainref" "$output"  1>&2
-    rm -f $tmpfile
+    # rm -f $tmpfile
   fi
 
   echo $output
@@ -841,14 +848,14 @@ generate_preview()
   SUMMED_CTF_PREVIEW=$(generate_jpg "${SUMMED_CTF_FILE}" "/tmp" )
 
   local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.jpg)
-  local res="$(printf '%.1f' ${PROCESSED_SUM_RESOLUTION:-0.0})Å ($(printf '%.1f' ${PROCESSED_SUM_NYQUIST:-0.0})%)"
+  local res="$(printf '%.1f' ${PROCESSED_SUM_RESOLUTION:-0.0})Å ($(echo ${PROCESSED_SUM_RESOLUTION_PERFORMANCE:-0.0} | awk '{printf( "%2.0f", $1*100 )}')%)"
   #>&2 echo "ctf res $res"
   convert \
     -resize '512x512^' -extent '512x512' $picked_preview \
     -flip ${SUMMED_CTF_PREVIEW} \
     +append -font Helvetica-Narrow -pointsize 28 -fill SeaGreen1 -draw "text 8,502 \"~$PROCESSED_NUMBER_PARTICLES pp\"" \
-    +append -font Helvetica-Narrow -pointsize 28 -fill yellow -draw "text 520,502 \"${timestamp}\"" \
-    +append -font Helvetica-Narrow -pointsize 28 -fill yellow -draw "text 854,502 \"$res\"" \
+    +append -font Helvetica-Narrow -pointsize 28 -fill yellow -draw "text 524,502 \"${timestamp}\"" \
+    +append -font Helvetica-Narrow -pointsize 28 -fill yellow -draw "text 894,502 \"$res\"" \
     $top
 
   rm -f $picked_preview
@@ -860,7 +867,7 @@ generate_preview()
   fi
   ALIGNED_CTF_PREVIEW=$(generate_jpg "${ALIGNED_CTF_FILE}" "/tmp" )
   local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.jpg)
-  local res="$(printf '%.1f' ${PROCESSED_ALIGN_RESOLUTION:-0.0})Å ($(printf '%.1f' ${PROCESSED_ALIGN_NYQUIST:-0.0})%)"
+  local res="$(printf '%.1f' ${PROCESSED_ALIGN_RESOLUTION:-0.0})Å ($(echo ${PROCESSED_ALIGN_RESOLUTION_PERFORMANCE:-0.0} | awk '{printf( "%2.0f", $1*100)}')%)"
   local ctf="cs $(printf '%.2f' ${PROCESSED_ALIGN_ASTIGMATISM:-0.0}) cc $(printf '%.2f' ${PROCESSED_ALIGN_CROSS_CORRELATION:-0.0})"
   local drift="$(printf "%.2f" ${PROCESSED_ALIGN_FIRST1:-0.0}) "/" $(printf "%.2f" ${PROCESSED_ALIGN_FIRST5:-0.0}) "/" $(printf "%.2f" ${PROCESSED_ALIGN_ALL:-0.0})"
  # >&2 echo "RES: $res DRIFT: $drift"
@@ -870,7 +877,7 @@ generate_preview()
     ${ALIGNED_CTF_PREVIEW} \
     +append -font Helvetica-Narrow -pointsize 28 -fill orange -draw "text 334,30 \"$drift\"" \
     +append -font Helvetica-Narrow -pointsize 28 -fill orange -draw "text 524,30 \"$ctf\"" \
-    +append -font Helvetica-Narrow -pointsize 28 -fill orange -draw "text 854,30 \"$res\"" \
+    +append -font Helvetica-Narrow -pointsize 28 -fill orange -draw "text 894,30 \"$res\"" \
     $bottom
 
   # clean files
@@ -909,8 +916,8 @@ parse_ctffind()
 /# Pixel size: / { apix=$4; next } \
 !/# / { defocus_1=$2; defocus_2=$3; astig=$4; phase_shift=$5; cross_correlation=$6; resolution=$7; next } \
 END { \
-  nyquist= 2 * apix / resolution;
-  print "declare -A ctf; ctf[apix]="apix " ctf[defocus_1]="defocus_1 " ctf[defocus_2]="defocus_2 " ctf[astigmatism]="astig " ctf[phase_shift]="phase_shift " ctf[cross_correlation]="cross_correlation " ctf[resolution]="resolution " ctf[nyquist]="nyquist;
+  resolution_performance= 2 * apix / resolution;
+  print "declare -A ctf; ctf[apix]="apix " ctf[defocus_1]="defocus_1 " ctf[defocus_2]="defocus_2 " ctf[astigmatism]="astig " ctf[phase_shift]="phase_shift " ctf[cross_correlation]="cross_correlation " ctf[resolution]="resolution " ctf[resolution_performance]="resolution_performance;
 }'
 }
 
