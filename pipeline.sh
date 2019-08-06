@@ -452,7 +452,7 @@ process_gainref()
   local outdir=${2:-.}
   if [[ ${input:0:1} == "/" ]]; then outdir=""; else mkdir -p $outdir; fi
 
-  >&2 echo "OUT " $outdir
+  >&2 echo
   
   local filename=$(basename -- "$input")
   local extension="${filename##*.}"
