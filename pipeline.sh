@@ -450,13 +450,13 @@ process_gainref()
   # read in a file and spit out the appropriate gainref to actually use via echo as path
   local input=$1
   local outdir=${2:-.}
-  
-  >&2 echo
+  if [[ ${input:0:1} == "/" ]]; then outdir=""; else mkdir -p $outdir; fi
+
+  >&2 echo "OUT " $outdir
   
   local filename=$(basename -- "$input")
   local extension="${filename##*.}"
   local output="$outdir/${filename}"
-  mkdir -p $outdir
 
   if [[ ! -e $input ]]; then
     >&2 echo "gainref file $input does not exist!"
@@ -468,8 +468,8 @@ process_gainref()
     output="$outdir/${input%.$extension}.mrc"
     if [[ $FORCE -eq 1 || ! -e $output ]]; then
       >&2 echo "converting gainref file $input to $output..."
-      module load ${EMAN2_LOAD} || exit $?
-      e2proc2d.py "$input" "$output"  1>&2 || exit $?
+      #module load ${EMAN2_LOAD} || exit $?
+      #e2proc2d.py "$input" "$output"  1>&2 || exit $?
       module load ${IMOD_LOAD} || exit $?
       dm2mrc "$input" "$output"  1>&2 || exit $?
     else
