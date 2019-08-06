@@ -647,6 +647,7 @@ generate_jpg()
 {
   local input=$1
   local outdir=${2:-.}
+  local lowpass=${3:-}
   
   >&2 echo
 
@@ -667,7 +668,11 @@ generate_jpg()
   if [[ $FORCE -eq 1 || ! -e $output ]]; then
     >&2 echo "generating preview of $input to $output..."
     module load ${EMAN2_LOAD} || exit $?
-    e2proc2d.py --writejunk $input $output  1>&2 || exit $?
+    if [ "$lowpass" == "" ]; then
+      e2proc2d.py --writejunk $input $output  1>&2 || exit $?
+    else
+      e2proc2d.py --writejunk $input $output --process filter.lowpass.gauss:cutoff_freq=$lowpass  1>&2 || exit $?
+    fi
   fi
 
   if [ ! -e $output ]; then
@@ -825,7 +830,7 @@ generate_preview()
     >&2 echo "aligned file $ALIGNED_DW_FILE not found..."
     exit 4
   fi
-  local aligned_jpg=$(generate_jpg "$ALIGNED_DW_FILE" /tmp) || exit $?
+  local aligned_jpg=$(generate_jpg "$ALIGNED_DW_FILE" /tmp 0.05) || exit $?
   if [ ! -e "$PARTICLE_FILE" ]; then
     >&2 echo "particle file $PARTICLE_FILE not found..."
     exit 4
