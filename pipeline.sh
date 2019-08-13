@@ -199,6 +199,11 @@ do_spa()
       PARTICLE_FILE=$(particle_file ${ALIGNED_DW_FILE}) || exit $?
       #echo "PARTICLE_FILE: $PARTICLE_FILE"
       SUMMED_CTF_FILE=$(sum_ctf_file "${MICROGRAPH}") || exit $?
+      # remove the _sum bit if SUMMED_FILE defined
+      if [ ! -z $SUMMED_FILE ]; then
+        SUMMED_CTF_FILE="${SUMMED_CTF_FILE%_sum_ctf.mrc}_ctf.mrc"
+        #>&2 echo "SUMMED CTF: $SUMMED_CTF_FILE"
+      fi
       #echo "SUMMED_CTF_FILE: $SUMMED_CTF_FILE"
     fi
     local PREVIEW_FILE=$(generate_preview) || exit $?
@@ -366,7 +371,13 @@ do_spa_sum() {
   fi
 
   local summed_file_log=""
-  if [[ $FORCE -eq 1 || ! -e $SUMMED_CTF_FILE ]]; then
+  # work out the summed average fo teh stack if necessary
+  local create_summed_file=1
+  if [ ! -z $SUMMED_FILE ]; then
+    create_summed_file=0
+    >&2 echo "using summed micrograph $SUMMED_FILE..."
+  fi
+  if [[ -z $SUMMED_FILE && ( $FORCE -eq 1 || ! -e $SUMMED_CTF_FILE ) ]]; then
     echo "  - task: sum"
     local start=$(date +%s.%N)
     local file=$(basename -- "$SUMMED_CTF_FILE") || exit $?
@@ -380,10 +391,13 @@ do_spa_sum() {
 
   echo "  - task: ctf_summed"
   local start=$(date +%s.%N)
-  if [ ! -e "$SUMMED_CTF_FILE" ]; then
+  if [[ $FORCE -eq 1 || ! -e "$SUMMED_CTF_FILE" ]]; then
     local outdir=$(dirname "$SUMMED_CTF_FILE") || exit $?
     SUMMED_CTF_FILE=$(process_ctffind "$SUMMED_FILE" "$outdir") || exit $?
-    rm -f "$SUMMED_FILE"
+    if [ $create_summed_file -eq 1 ]; then
+      #>&2 echo "DELETING $SUMMED_FILE"
+      rm -f "$SUMMED_FILE"
+    fi
   fi
   local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
   echo "    duration: $duration"
@@ -526,10 +540,11 @@ align_stack()
   
   if [[ $FORCE -eq 1 || ! -e $output ]]; then
 
-    >&2 echo "aligning stack $input to $output, using gainref file $gainref..."
+    local extension="${input##*.}"
+    >&2 echo "aligning $extension stack $input to $output, using gainref file $gainref..."
     local cmd="
       MotionCor2  \
-        $(if [ '$extension' == 'mrc' ]; then echo '-InMrc'; else echo '-InTiff'; fi) '$input' \
+        $(if [ "$extension" == 'mrc' ]; then echo '-InMrc'; else echo '-InTiff'; fi) '$input' \
         $(if [ ! '$gainref' == '' ]; then echo -Gain \'$gainref\'; fi) \
         -OutMrc $output \
         -LogFile ${output%.${extension}}.log \
@@ -951,9 +966,9 @@ END { \
 motioncor_file()
 {
   local input=$1
-  local datafile="${input}.log0-Patch-Full.log"
+  local extension="${input##*.}"
+  local datafile="${input%.${extension}}.log0-Patch-Full.log"
   echo $datafile
-
 }
 
 parse_motioncor()
