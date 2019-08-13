@@ -570,7 +570,7 @@ align_stack()
     module load ${MOTIONCOR2_LOAD} || exit $?
     eval $align_command  1>&2 || exit $?
   fi
-  
+
   echo $output
 }
 
@@ -967,14 +967,19 @@ motioncor_file()
 {
   local input=$1
   local extension="${input##*.}"
-  local datafile="${input%.${extension}}.log0-Patch-Full.log"
+  local basename=$(basename -- "$input")
+  # sometimes it has the extention?!
+  local datafile="${input}.log0-Patch-Full.log"
+  if [[ $basename == FoilHole_* ]]; then
+    datafile="${input%.${extension}}.log0-Patch-Full.log"
+  fi
   echo $datafile
 }
 
 parse_motioncor()
 {
   local input=$1
-  local datafile=$(motioncor_file "$input") || exit $?
+  local datafile=$(motioncor_file "$input") 
   if [ ! -e $datafile ]; then
     >&2 echo "motioncor2 data file $datafile does not exist"
     exit 4
