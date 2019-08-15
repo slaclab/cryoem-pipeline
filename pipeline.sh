@@ -43,6 +43,8 @@ TOL=${TOL:-0.5}
 OUTSTACK=${OUTSTACK:-0}
 INFMMOTION=${INFMMOTION:-1}
 GPU=${GPU:-0}
+FMREF=${FMREF:-0}
+INITDOSE=${INITDOSE:-0}
 
 # PICKING
 PARTICLE_SIZE=${PARTICLE_SIZE:-150}
@@ -300,6 +302,8 @@ do_spa_align() {
   PROCESSED_ALIGN_FIRST8=${align[first8]}
   PROCESSED_ALIGN_ALL=${align[all]}
 
+  # create a file that relion can read
+  local star=$(create_motioncor_star ${ALIGNED_FILE}) || exit $?
 
   echo "  - task: ctf_align"
   local start=$(date +%s.%N)
@@ -472,9 +476,9 @@ process_gainref()
   local extension="${filename##*.}"
   local output="$outdir/${filename}"
 
-  if [[ ! -e $input ]]; then
+  if [ ! -e "$input" ]; then
     >&2 echo "gainref file $input does not exist!"
-    exit
+    exit 4
   fi
 
   if [[ "$extension" -eq "dm4" ]]; then
@@ -482,8 +486,6 @@ process_gainref()
     output="$outdir/${input%.$extension}.mrc"
     if [[ $FORCE -eq 1 || ! -e $output ]]; then
       >&2 echo "converting gainref file $input to $output..."
-      #module load ${EMAN2_LOAD} || exit $?
-      #e2proc2d.py "$input" "$output"  1>&2 || exit $?
       module load ${IMOD_LOAD} || exit $?
       dm2mrc "$input" "$output"  1>&2 || exit $?
     else
@@ -556,7 +558,8 @@ align_stack()
         -Patch $PATCH \
         -Throw $THROW \
         -Trunc $TRUNC \
-        -SumRange 0 0 \
+        -InitDose $INITDOSE \
+        -FmRef $FMREF \
         -Iter $ITER \
         -Tol $TOL \
         -OutStack $OUTSTACK \
@@ -1004,6 +1007,63 @@ END {
 # print "    - "lastx "-"x" ("dx*dx")\t" lasty "-"y" ("dy*dy"):\t" n;
 
 }
+
+create_motioncor_star()
+{
+  local input=$1
+  local datafile=$(motioncor_file "$input") 
+  if [ ! -e $datafile ]; then
+    >&2 echo "motioncor2 data file $datafile does not exist"
+    exit 4
+  fi
+  local output="${datafile%.log0-Patch-Full.log}.star"
+  
+  >&2 echo "creating alignment star file $output"
+
+  local binning=1
+  if [ $SUPERRES -eq 1 ]; then
+    binning=2
+  fi
+
+  module load ${IMOD_LOAD}
+  local info=$(header ${MICROGRAPH} | grep 'Number of columns,')
+  local x=$(echo $info | awk '{print $7}')
+  local y=$(echo $info | awk '{print $8}')
+  local z=$(echo $info | awk '{print $9}')
+
+  cat <<EOF > $output 
+
+data_general
+
+_rlnImageSizeX                                     ${x}
+_rlnImageSizeY                                     ${y}
+_rlnImageSizeZ                                       ${z}
+_rlnMicrographMovieName                    ${MICROGRAPH}
+_rlnMicrographGainName                     ${GAINREF_FILE}
+_rlnMicrographBinning                                 ${binning}
+_rlnMicrographOriginalPixelSize                    ${APIX}
+_rlnMicrographDoseRate                             ${FMDOSE}
+_rlnMicrographPreExposure                             ${INITDOSE}
+_rlnVoltage                                         ${KV}
+_rlnMicrographStartFrame                              1
+_rlnMotionModelVersion                                0
+
+
+data_global_shift
+
+loop_
+_rlnMicrographFrameNumber #1
+_rlnMicrographShiftX #2
+_rlnMicrographShiftY #3  
+EOF
+  cat $datafile | tail -n +4 >> $output
+  echo >> $output
+  
+  #>&2 cat $output
+
+  echo $output
+}
+
 
 set -e
 main "$@"
