@@ -43,6 +43,7 @@ TOL=${TOL:-0.5}
 OUTSTACK=${OUTSTACK:-0}
 INFMMOTION=${INFMMOTION:-1}
 GPU=${GPU:-0}
+GPU_OFFSET=${GPU_OFFSET:-0}
 FMREF=${FMREF:-0}
 INITDOSE=${INITDOSE:-0}
 
@@ -118,8 +119,9 @@ main() {
     esac
   done
 
-  MICROGRAPH=${@:$OPTIND:1}
-  if [ -z $MICROGRAPH ]; then
+  MICROGRAPHS=${@:$OPTIND}
+  # >&2 echo "MICROGRAPHS: ${MICROGRAPHS}"
+  if [ ${#MICROGRAPHS[@]} -lt 1 ]; then
     echo "Need input micrograph MICROGRPAH_FILE to continue..."
     usage
     exit 1
@@ -135,16 +137,20 @@ main() {
     exit 1
   fi
 
-  if [ "$MODE" == "spa" ]; then
-    do_spa
-  elif [ "$MODE" == "tomo" ]; then
-    do_tomo
-  else
-    echo "Unknown MODE $MODE"
-    usage
-    exit 1
-  fi
+  for MICROGRAPH in ${MICROGRAPHS}; do
 
+    if [ "$MODE" == "spa" ]; then
+      >&2 echo "MICROGRAPH: ${MICROGRAPH}"
+      do_spa
+    elif [ "$MODE" == "tomo" ]; then
+      do_tomo
+    else
+      echo "Unknown MODE $MODE"
+      usage
+      exit 1
+    fi
+
+  done
 }
 
 
@@ -544,6 +550,7 @@ align_stack()
 
     local extension="${input##*.}"
     >&2 echo "aligning $extension stack $input to $output, using gainref file $gainref..."
+    local gpu=$(($GPU+$GPU_OFFSET))
     local cmd="
       MotionCor2  \
         $(if [ "$extension" == 'mrc' ]; then echo '-InMrc'; else echo '-InTiff'; fi) '$input' \
@@ -564,7 +571,7 @@ align_stack()
         -Tol $TOL \
         -OutStack $OUTSTACK \
         -InFmMotion $INFMMOTION \
-        -Gpu $GPU \
+        -Gpu $gpu \
         -GpuMemUsage 0.95
     "
 
