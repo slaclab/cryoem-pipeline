@@ -638,7 +638,7 @@ no
 no
 __CTFFIND_EOF__
     else
-      ctffind > $log << __CTFFIND_EOF__
+      ctffind > ${output%.${extension}}.log << __CTFFIND_EOF__
 $input
 $output
 $apix
@@ -662,6 +662,10 @@ yes
 no
 __CTFFIND_EOF__
     fi
+  fi
+
+  if [ $? -ne 0 ]; then
+    exit 1
   fi
 
   echo $output
