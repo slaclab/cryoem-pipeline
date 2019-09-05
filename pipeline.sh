@@ -943,6 +943,10 @@ generate_preview()
   || exit $?
   rm -f $top $bottom  || exit $?
 
+  if [ ! -e $output ]; then
+    exit 4
+  fi
+
   echo $output
 }
 
