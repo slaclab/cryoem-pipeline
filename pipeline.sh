@@ -391,7 +391,7 @@ do_spa_sum() {
     create_summed_file=0
     >&2 echo "using summed micrograph $SUMMED_FILE..."
   fi
-  if [[ -z $SUMMED_FILE && ( $FORCE -eq 1 || ! -e $SUMMED_CTF_FILE ) ]]; then
+  if [[ -z $SUMMED_FILE && ( $FORCE -eq 1 || ! -e $SUMMED_CTF_FILE || ! -s $SUMMED_CTF_FILE ) ]]; then
     echo "  - task: sum"
     local start=$(date +%s.%N)
     local file=$(basename -- "$SUMMED_CTF_FILE") || exit $?
@@ -405,7 +405,7 @@ do_spa_sum() {
 
   echo "  - task: ctf_summed"
   local start=$(date +%s.%N)
-  if [[ $FORCE -eq 1 || ! -e "$SUMMED_CTF_FILE" ]]; then
+  if [[ $FORCE -eq 1 || ! -e "$SUMMED_CTF_FILE" || ! -s $SUMMED_CTF_FILE ]]; then
     local outdir=$(dirname "$SUMMED_CTF_FILE") || exit $?
     SUMMED_CTF_FILE=$(process_ctffind "$SUMMED_FILE" "$outdir") || exit $?
     if [ $create_summed_file -eq 1 ]; then
@@ -616,7 +616,7 @@ process_ctffind()
     >&2 echo "output ctf file $output already exists"
   fi
 
-  if [[ $FORCE -eq 1 || ! -e $output ]]; then
+  if [[ $FORCE -eq 1 || ! -e $output || ! -s $output ]]; then
     >&2 echo "ctf'ing micrograph $input to $output..."
     module load ${CTFFIND4_LOAD} || exit $?
     # phase plate?
