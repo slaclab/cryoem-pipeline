@@ -216,7 +216,7 @@ do_spa()
     fi
     local PREVIEW_FILE=$(generate_preview) || exit $?
     echo "    files:"
-    dump_file_meta "${PREVIEW_FILE}"
+    dump_file_meta "${PREVIEW_FILE}" || exit $?
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
     echo "    duration: $duration"
     echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
