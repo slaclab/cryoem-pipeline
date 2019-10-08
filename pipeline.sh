@@ -299,7 +299,11 @@ do_spa_align() {
   local align=$(parse_motioncor ${ALIGNED_FILE}) || exit $?
   eval $align || exit $?
   for k in "${!align[@]}"; do
-  echo "      $k: ${align[$k]}"
+  if [ "$k" == 'frames' ]; then
+    echo "      $k: ${align[$k]}"
+  else
+    printf "      $k: %.2f\n" ${align[$k]}
+  fi
   done
 
   PROCESSED_ALIGN_FIRST1=${align[first1]}
