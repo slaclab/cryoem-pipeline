@@ -294,6 +294,10 @@ do_spa_align() {
 
   echo "  - task: align_data"
   local file=$(motioncor_file ${ALIGNED_FILE}) || exit $?
+  if [ ! -e $file ]; then
+    >&2 echo "motioncor2 data file $file does not exist"
+    exit 4
+  fi
   echo "    source: $file"
   echo "    data:"
   local align=$(parse_motioncor ${ALIGNED_FILE}) || exit $?
@@ -993,6 +997,8 @@ motioncor_file()
   # sometimes it has the extention?!
   local datafile="${input}.log0-Patch-Full.log"
   if [[ $basename == FoilHole_* ]]; then
+    datafile="${input%.${extension}}.log0-Patch-Full.log"
+  elif [[ "$extension" == "mrc" ]]; then
     datafile="${input%.${extension}}.log0-Patch-Full.log"
   fi
   echo $datafile
