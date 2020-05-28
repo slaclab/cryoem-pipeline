@@ -1,19 +1,19 @@
 #!/bin/bash -e
 
 # module loads for programs
-IMOD_VERSION="4.9.11"
+IMOD_VERSION=${IMOD_VERSION:-4.10.42}
 IMOD_LOAD="imod/${IMOD_VERSION}"
 EMAN2_VERSION="20190603"
 EMAN2_LOAD="eman2/${EMAN2_VERSION}"
-MOTIONCOR2_VERSION="1.1.0"
-MOTIONCOR2_LOAD="motioncor2-1.1.0-gcc-4.8.5-zhoi3ww"
+MOTIONCOR2_VERSION=${MOTIONCOR2_VERSION:-1.2.3}
+MOTIONCOR2_LOAD="motioncor2/${MOTIONCOR2_VERSION}"
 #MOTIONCOR2_VERSION="1.2.2"
 #MOTIONCOR2_LOAD="motioncor2/${MOTIONCOR2_VERSION}"
-CTFFIND4_VERSION="4.1.10"
+CTFFIND4_VERSION=${CTFFIND4_VERSION:-4.1.10}
 CTFFIND4_LOAD="ctffind/${CTFFIND4_VERSION}"
-RELION_VERSION="3.0.4"
+RELION_VERSION=${RELION_VERSION:-3.0.4}
 RELION_LOAD="relion/${RELION_VERSION}"
-IMAGEMAGICK_VERSION="6.8.9"
+IMAGEMAGICK_VERSION=${IMAGEMAGICK_VERSION:=-6.8.9}
 IMAGEMAGICK_LOAD="imagemagick/$IMAGEMAGICK_VERSION"
 
 # GENERATE
@@ -51,6 +51,9 @@ INITDOSE=${INITDOSE:-0}
 PARTICLE_SIZE=${PARTICLE_SIZE:-150}
 PARTICLE_SIZE_MIN=${PARTICLE_SIZE_MIN:-$(echo $PARTICLE_SIZE | awk '{ print $1*0.8 }')}
 PARTICLE_SIZE_MAX=${PARTICLE_SIZE_MAX:-$(echo $PARTICLE_SIZE | awk '{ print $1*1.2 }')}
+
+# LOCAL COPY
+LOCAL=${LOCAL}
 
 # usage
 usage() {
@@ -138,6 +141,9 @@ main() {
   fi
 
   for MICROGRAPH in ${MICROGRAPHS}; do
+
+    # strip ./
+    if [[ "$MICROGRAPH" = ./* ]]; then MICROGRAPH="${MICROGRAPH:2}"; fi
 
     if [ "$MODE" == "spa" ]; then
       >&2 echo "MICROGRAPH: ${MICROGRAPH}"
@@ -498,10 +504,19 @@ process_gainref()
   if [[ "$extension" -eq "dm4" ]]; then
   
     output="$outdir/${input%.$extension}.mrc"
+    # strip all ./'s
+    if [[ "$output" = ././* ]]; then output="${output:4}"; fi
+    if [[ "$output" = ./* ]]; then output="${output:2}"; fi
     if [[ $FORCE -eq 1 || ! -e $output ]]; then
       >&2 echo "converting gainref file $input to $output..."
       module load ${IMOD_LOAD} || exit $?
+      # assume $input is always superres, so scale down if not
       dm2mrc "$input" "$output"  1>&2 || exit $?
+      if [[ "$SUPERRES" == "0" ]]; then
+        >&2 echo "binning gain ref for non-superres $SUPERRES"
+        >&2 newstack -bin 2 "$output" "/tmp/${filename%.$extension}.mrc" && mv "/tmp/${filename%.$extension}.mrc" "$output" || exit $?
+      fi
+
     else
       >&2 echo "gainref file $output already exists"
     fi
@@ -513,6 +528,7 @@ process_gainref()
     
   fi
   
+  >&2 echo "OUT: $output"
   echo $output
 }
 
@@ -553,15 +569,24 @@ align_stack()
   if [ -e $output ]; then
     >&2 echo "aligned file $output already exists"
   fi
+
+  local micrograph=$input
+  # copy locally if requested
+  if [[ $LOCAL != "" && -d $LOCAL ]]; then
+    local this=$(basename -- $micrograph)
+    >&2 echo "executing: cp -f $input $LOCAL/$this"
+    >&2 cp -f $input $LOCAL/$this || exit $?
+    micrograph=$LOCAL/$this
+  fi
   
   if [[ $FORCE -eq 1 || ! -e $output ]]; then
 
     local extension="${input##*.}"
-    >&2 echo "aligning $extension stack $input to $output, using gainref file $gainref..."
+    >&2 echo "aligning $extension stack $micrograph to $output, using gainref file $gainref..."
     local gpu=$(($GPU+$GPU_OFFSET))
     local cmd="
       MotionCor2  \
-        $(if [ "$extension" == 'mrc' ]; then echo '-InMrc'; else echo '-InTiff'; fi) '$input' \
+        $(if [ "$extension" == 'mrc' ]; then echo '-InMrc'; else echo '-InTiff'; fi) '$micrograph' \
         $(if [ ! '$gainref' == '' ]; then echo -Gain \'$gainref\'; fi) \
         -OutMrc $output \
         -LogFile ${output%.${extension}}.log \
@@ -587,6 +612,12 @@ align_stack()
     >&2 echo "executing:" $align_command
     module load ${MOTIONCOR2_LOAD} || exit $?
     eval $align_command  1>&2 || exit $?
+  fi
+
+  if [[ $LOCAL != "" && -d $LOCAL ]]; then
+    local this=$(basename -- $micrograph)
+    >&2 echo "executing: rm -f $LOCAL/$this"
+    >&2 rm -f $LOCAL/$this || exit $? 
   fi
 
   echo $output
@@ -680,11 +711,12 @@ __CTFFIND_EOF__
 }
 
 
-generate_jpg()
+generate_image()
 {
   local input=$1
   local outdir=${2:-.}
   local lowpass=${3:-}
+  local format=${4:-jpg}
   
   >&2 echo
 
@@ -695,7 +727,7 @@ generate_jpg()
     
   local filename=$(basename -- "$input")
   local extension="${filename##*.}"
-  local output="$outdir/${filename%.${extension}}.jpg"
+  local output="$outdir/${filename%.${extension}}.${format}"
   mkdir -p $outdir
   
   if [ -e $output ]; then
@@ -704,11 +736,22 @@ generate_jpg()
 
   if [[ $FORCE -eq 1 || ! -e $output ]]; then
     >&2 echo "generating preview of $input to $output..."
-    module load ${EMAN2_LOAD} || exit $?
-    if [ "$lowpass" == "" ]; then
-      e2proc2d.py --writejunk $input $output  1>&2 || exit $?
-    else
-      e2proc2d.py --writejunk $input $output --process filter.lowpass.gauss:cutoff_freq=$lowpass  1>&2 || exit $?
+    module load ${IMOD_LOAD} || exit $?
+    tmpfile=$input
+    if [ "$lowpass" != "" ]; then
+      tmpfile=/tmp/${filename}
+      echo "clip filter -l $lowpass $input $tmpfile" 1>&2 
+      clip filter -l $lowpass $input $tmpfile 1>&2 || exit $?
+    fi
+    local opts=""
+    if [ "${format}" == "jpg" ]; then
+      opts="-j"
+    fi
+    echo "mrc2tif ${opts} $tmpfile $output" 1>&2
+    mrc2tif ${opts} $tmpfile $output 1>&2 || exit $?
+    if [ "$lowpass" != "" ]; then
+      echo "rm -f $tmpfile" 1>&2
+      rm -f $tmpfile || exit $?
     fi
   fi
 
@@ -717,6 +760,7 @@ generate_jpg()
     exit 4
   fi
 
+  >&2 echo "done"
   echo $output
 }
 
@@ -834,6 +878,10 @@ generate_file_meta()
 
 dump_file_meta()
 {
+  if [ ! -e "$1" ]; then
+    >&2 echo "File '$1' does not exist."
+    exit 4
+  fi
   echo "      - path: $1"
   local out=$(generate_file_meta "$1") || exit $?
   eval "$out"
@@ -849,7 +897,7 @@ generate_preview()
   mkdir -p $outdir
   local filename=$(basename -- "$MICROGRAPH") || exit $?
   if [ ! -z ${BASENAME} ]; then
-    filename="${BASENAME}_sidebyside.jpg"
+    filename="${BASENAME}.jpg"
   fi
   local extension="${filename##*.}"
   local output="$outdir/${filename}"
@@ -867,7 +915,7 @@ generate_preview()
     >&2 echo "aligned file $ALIGNED_DW_FILE not found..."
     exit 4
   fi
-  local aligned_jpg=$(generate_jpg "$ALIGNED_DW_FILE" /tmp 0.05) || exit $?
+  local aligned_jpg=$(generate_image "$ALIGNED_DW_FILE" /tmp 0.05) || exit $?
   if [ ! -e "$PARTICLE_FILE" ]; then
     >&2 echo "particle file $PARTICLE_FILE not found..."
     exit 4
@@ -899,14 +947,14 @@ generate_preview()
   PROCESSED_NUMBER_PARTICLES=${PROCESSED_NUMBER_PARTICLES:-$i}
 
   # get a timestamp of when file was created
-  local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%d %H:%M:%S" -r ${MICROGRAPH}) || exit $?
+  local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%dT%H:%M:%SZ" -r ${MICROGRAPH}) || exit $?
 
   # create the top half
   if [ ! -e "$SUMMED_CTF_FILE" ]; then
     >&2 echo "summed ctf file $SUMMED_CTF_FILE not found..."
     exit 4
   fi
-  SUMMED_CTF_PREVIEW=$(generate_jpg "${SUMMED_CTF_FILE}" "/tmp" ) || exit $?
+  SUMMED_CTF_PREVIEW=$(generate_image "${SUMMED_CTF_FILE}" "/tmp" "" "tif" ) || exit $?
 
   local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.jpg)
   local res="$(printf '%.1f' ${PROCESSED_SUM_RESOLUTION:-0.0})Å ($(echo ${PROCESSED_SUM_RESOLUTION_PERFORMANCE:-0.0} | awk '{printf( "%2.0f", $1*100 )}')%)" || exit $?
@@ -914,9 +962,9 @@ generate_preview()
   convert \
     -resize '512x512^' -extent '512x512' $picked_preview \
     -flip ${SUMMED_CTF_PREVIEW} \
-    +append -font Helvetica-Narrow -pointsize 28 -fill SeaGreen1 -draw "text 8,502 \"~$PROCESSED_NUMBER_PARTICLES pp\"" \
-    +append -font Helvetica-Narrow -pointsize 28 -fill yellow -draw "text 524,502 \"${timestamp}\"" \
-    +append -font Helvetica-Narrow -pointsize 28 -fill yellow -draw "text 894,502 \"$res\"" \
+    +append -font DejaVu-Sans -pointsize 24 -fill SeaGreen1 -stroke SeaGreen3 -strokewidth 1 -draw "text 13,502 \"~$PROCESSED_NUMBER_PARTICLES pp\"" \
+    +append -font DejaVu-Sans -pointsize 24 -fill yellow -stroke orange -strokewidth 1 -draw "text 529,502 \"${timestamp}\"" \
+    +append -font DejaVu-Sans -pointsize 24 -fill yellow -stroke orange -strokewidth 1 -draw "text 864,502 \"$res\"" \
     $top \
   || exit $?
 
@@ -927,7 +975,7 @@ generate_preview()
     >&2 echo "aligned ctf file $ALIGNED_CTF_FILE not found..."
     exit 4
   fi
-  ALIGNED_CTF_PREVIEW=$(generate_jpg "${ALIGNED_CTF_FILE}" "/tmp" ) || exit $?
+  ALIGNED_CTF_PREVIEW=$(generate_image "${ALIGNED_CTF_FILE}" "/tmp" "" "tif") || exit $?
   local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.jpg) || exit $?
   local res="$(printf '%.1f' ${PROCESSED_ALIGN_RESOLUTION:-0.0})Å ($(echo ${PROCESSED_ALIGN_RESOLUTION_PERFORMANCE:-0.0} | awk '{printf( "%2.0f", $1*100)}')%)"
   local ctf="cs $(printf '%.2f' ${PROCESSED_ALIGN_ASTIGMATISM:-0.0}) cc $(printf '%.2f' ${PROCESSED_ALIGN_CROSS_CORRELATION:-0.0})"
@@ -937,9 +985,9 @@ generate_preview()
     -resize '512x512^' -extent '512x512' \
     $aligned_jpg \
     ${ALIGNED_CTF_PREVIEW} \
-    +append -font Helvetica-Narrow -pointsize 28 -fill orange -draw "text 334,30 \"$drift\"" \
-    +append -font Helvetica-Narrow -pointsize 28 -fill orange -draw "text 524,30 \"$ctf\"" \
-    +append -font Helvetica-Narrow -pointsize 28 -fill orange -draw "text 894,30 \"$res\"" \
+    +append -font DejaVu-Sans -pointsize 24 -fill orange -stroke orange2 -strokewidth 1 -draw "text 274,30 \"$drift\"" \
+    +append -font DejaVu-Sans -pointsize 24 -fill orange -stroke orange2 -strokewidth 1 -draw "text 529,30 \"$ctf\"" \
+    +append -font DejaVu-Sans -pointsize 24 -fill orange -stroke orange2 -strokewidth 1 -draw "text 864,30 \"$res\"" \
     $bottom \
  || exit $?
 
@@ -984,9 +1032,14 @@ parse_ctffind()
 /# Pixel size: / { apix=$4; next } \
 !/# / { defocus_1=$2; defocus_2=$3; astig=$4; phase_shift=$5; cross_correlation=$6; resolution=$7; next } \
 END { \
-  resolution_performance= 2 * apix / resolution;
-  print "declare -A ctf; ctf[apix]="apix " ctf[defocus_1]="defocus_1 " ctf[defocus_2]="defocus_2 " ctf[astigmatism]="astig " ctf[phase_shift]="phase_shift " ctf[cross_correlation]="cross_correlation " ctf[resolution]="resolution " ctf[resolution_performance]="resolution_performance;
+  if (resolution=="inf") {
+    print "declare -A ctf; ctf[apix]="apix " ctf[defocus_1]="defocus_1 " ctf[defocus_2]="defocus_2 " ctf[astigmatism]="astig " ctf[phase_shift]="phase_shift " ctf[cross_correlation]="cross_correlation;
+  } else {
+    resolution_performance= 2 * apix / resolution;
+    print "declare -A ctf; ctf[apix]="apix " ctf[defocus_1]="defocus_1 " ctf[defocus_2]="defocus_2 " ctf[astigmatism]="astig " ctf[phase_shift]="phase_shift " ctf[cross_correlation]="cross_correlation " ctf[resolution]="resolution " ctf[resolution_performance]="resolution_performance;
+  }
 }'
+
 }
 
 motioncor_file()
@@ -996,9 +1049,12 @@ motioncor_file()
   local basename=$(basename -- "$input")
   # sometimes it has the extention?!
   local datafile="${input}.log0-Patch-Full.log"
-  if [[ $basename == FoilHole_* ]]; then
+  if [[ $basename == FoilHole_*  ]]; then
     datafile="${input%.${extension}}.log0-Patch-Full.log"
-  elif [[ "$extension" == "mrc" ]]; then
+    if [ ! -e $datafile ]; then
+      datafile="${input%.${extension}}.mrc.log0-Patch-Full.log"
+    fi
+  elif [[ "$extension" == "mrc" && ! -e "$datafile" ]]; then
     datafile="${input%.${extension}}.log0-Patch-Full.log"
   fi
   echo $datafile
@@ -1013,21 +1069,26 @@ parse_motioncor()
     exit 4
   fi
   cat $datafile | grep -vE '^$' | awk '
-!/# / { 
-  if( $1 > 1 ){ 
-    x=$2; y=$3; 
-    dx=lastx-x; dy=lasty-y; 
-    n=sqrt((dx*dx)+(dy*dy)); 
-    drifts[$1-1]=n; 
-} lastx=$2; lasty=$3; next; } 
-END { 
+!/# / {
+  if( $1 > 1 ){
+    x=$2; y=$3;
+    dx=lastx-x; dy=lasty-y;
+    n=sqrt((dx*dx)+(dy*dy));
+    drifts[$1-1]=n;
+} lastx=$2; lasty=$3; next; }
+END {
   for (i = 1; i <= length(drifts); ++i) {
     if( i <= 3 ){ first3 += drifts[i] }
     if( i <= 5 ){ first5 += drifts[i] }
     if( i <= 8 ){ first8 += drifts[i] }
     all += drifts[i]
   }
-  print "declare -A align; align[first1]="drifts[1] " align[first3]="first3/3 " align[first5]="first5/5 " align[first8]="first8/8 " align[all]="all/length(drifts) " align[frames]="length(drifts)+1;
+  f1 = sprintf("%.4f", drifts[1]);
+  f3 = sprintf("%.5f", first3/3);
+  f5 = sprintf("%.4f", first5/5);
+  f8 = sprintf("%.4f", first8/8);
+  a = sprintf("%.4f", all/length(drifts));
+  print "declare -A align; align[first1]="f1 " align[first3]="f3 " align[first5]="f5 " align[first8]="f8 " align[all]="a " align[frames]="length(drifts)+1;
 }'
 # print "    - "lastx "-"x" ("dx*dx")\t" lasty "-"y" ("dy*dy"):\t" n;
 
