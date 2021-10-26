@@ -3,6 +3,7 @@
 from airflow.plugins_manager import AirflowPlugin
 
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow_multi_dagrun.operators import TriggerMultiDagRunOperator
 from airflow.exceptions import AirflowException, AirflowSkipException
 
 from airflow import settings
@@ -122,12 +123,12 @@ def create_session():
     finally:
         session.close()
 
-class TriggerMultipleDagRunOperator(TriggerDagRunOperator):
+class TriggerMultiDagRunOperator(TriggerDagRunOperator):
     template_fields = ('trigger_dag_id', 'dry_run' )
     def __init__(self, dry_run=False, *args,**kwargs):
         self.dry_run = dry_run
-        #kwargs['python_callable'] = trigger_preprocessing
-        super( TriggerMultipleDagRunOperator, self ).__init__( *args, **kwargs )
+        self.python_callable = trigger_preprocessing
+        super( TriggerMultiDagRunOperator, self ).__init__( *args, **kwargs )
     def execute(self, context):
         count = 0
         self.python_callable = trigger_preprocessing
@@ -159,4 +160,4 @@ class TriggerMultipleDagRunOperator(TriggerDagRunOperator):
 
 class TriggerPlugin(AirflowPlugin):
     name = 'trigger_plugin'
-    operators = [TriggerMultipleDagRunOperator,]
+    operators = [TriggerMultiDagRunOperator,]

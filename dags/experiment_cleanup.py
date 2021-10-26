@@ -42,10 +42,10 @@ class StuckTasksSensor(PostgresOperator):
     """
     @apply_defaults
     def __init__(
-            self, database, experiments_from_xcom, pickle_file,
-            sql=None, postgres_conn_id='postgres_default', autocommit=False, parameters=None,
-            *args, **kwargs):
-        super(PostgresOperator, self).__init__( database=database, sql=sql, *args, **kwargs )
+            self, task_id, database, experiments_from_xcom, pickle_file,
+            sql=None, postgres_conn_id='postgres_default', autocommit=False, parameters=None, **kwargs):
+        super(PostgresOperator, self).__init__( task_id=task_id, **kwargs ) #database=database, sql=sql, *args, **kwargs )
+        self.task_id = task_id
         self.exps = experiments_from_xcom
         self.sql = sql
         self.pickle_file = pickle_file

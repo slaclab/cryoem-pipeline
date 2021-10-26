@@ -5,7 +5,7 @@ from datetime import datetime
 from airflow.operators.postgres_operator import PostgresOperator
 from airflow.hooks.postgres_hook import PostgresHook
 
-from airflow.operators import GenericInfluxOperator, InfluxOperator #, Xcom2InfluxOperator
+from influx_operators import GenericInfluxOperator, InfluxOperator
 import influxdb
 
 import logging

@@ -15,17 +15,17 @@ from airflow.models import BaseOperator
 from airflow.operators.python_operator import PythonOperator, ShortCircuitOperator
 from airflow.operators.bash_operator import BashOperator
 
-from airflow.operators.dagrun_operator import TriggerDagRunOperator, DagRunOrder
+from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
-from airflow.operators import LogbookConfigurationSensor, LogbookCreateRunOperator
-from airflow.operators import RsyncOperator, ExtendedAclOperator
+from cryoem_operators import LogbookConfigurationSensor, LogbookCreateRunOperator
+from file_operators import RsyncOperator, ExtendedAclOperator
 
 # from subprocess import Popen, STDOUT, PIPE, call
 # from tempfile import gettempdir, NamedTemporaryFile
 # from airflow.utils.file import TemporaryDirectory
 
-from airflow.operators import TriggerMultipleDagRunOperator
-from airflow.operators import SlackAPIEnsureChannelOperator, SlackAPIInviteToChannelOperator
+from trigger_operators import TriggerMultiDagRunOperator
+from slack_operators import SlackAPIEnsureChannelOperator, SlackAPIInviteToChannelOperator
 
 from airflow.exceptions import AirflowException, AirflowSkipException
 
@@ -91,7 +91,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     ###
     sample_directory = BashOperator( task_id='sample_directory',
         bash_command = "timeout 5 mkdir -p {{ ti.xcom_pull(task_ids='config',key='experiment_directory') }}/{{ ti.xcom_pull(task_ids='config',key='sample')['guid'] }}/raw/ && echo {{ ti.xcom_pull(task_ids='config',key='experiment_directory') }}/{{ ti.xcom_pull(task_ids='config',key='sample')['guid'] }}/raw/",
-        xcom_push=True
+        do_xcom_push=True
     )
     
     sample_symlink = BashOperator( task_id='sample_symlink',
@@ -122,7 +122,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
             'directory': args['destination_directory'] + '/.daq/',
             'prefix': args['tem'] + '_sync_'
         },
-        xcom_push=True,
+        do_xcom_push=True,
     )
 
     ###
@@ -226,7 +226,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     ###
     # trigger another daq to handle the rest of the pipeline
     ###
-    trigger = TriggerMultipleDagRunOperator( task_id='trigger',
+    trigger = TriggerMultiDagRunOperator( task_id='trigger',
         trigger_dag_id="{{ ti.xcom_pull( task_ids='config', key='experiment' ) }}_{{ ti.xcom_pull( task_ids='config', key='sample' )['guid'] }}",
         dry_run=str(args['dry_run']),
     )

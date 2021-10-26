@@ -19,7 +19,7 @@ from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
 from cryoem_operators import LogbookConfigurationSensor, LogbookCreateRunOperator
 from file_operators import RsyncOperator, ExtendedAclOperator, HasFilesOperator
-from trigger_operators import TriggerMultipleDagRunOperator
+from trigger_operators import TriggerMultiDagRunOperator
 from slack_operators import SlackAPIEnsureChannelOperator, SlackAPIInviteToChannelOperator
 
 from airflow.exceptions import AirflowException, AirflowSkipException
@@ -237,7 +237,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     ###
     # trigger another daq to handle the rest of the pipeline
     ###
-    trigger = TriggerMultipleDagRunOperator( task_id='trigger',
+    trigger = TriggerMultiDagRunOperator( task_id='trigger',
         queue=str(args['data_transfer_queue']),
         trigger_dag_id="{{ ti.xcom_pull( task_ids='config', key='experiment' ) }}_{{ ti.xcom_pull( task_ids='config', key='sample' )['guid'] }}",
         dry_run=str(args['dry_run']),

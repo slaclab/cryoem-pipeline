@@ -6,16 +6,17 @@ from airflow.hooks.http_hook import HttpHook
 
 from airflow.operators.dummy_operator import DummyOperator
 from airflow.operators.python_operator import PythonOperator, BranchPythonOperator
-from airflow.operators.file_plugin import FileGlobSensor, FileInfoSensor
 from airflow.operators.bash_operator import BashOperator
-from airflow.operators.bashplus_plugin import BashPlusOperator
 from airflow.operators.slack_operator import SlackAPIPostOperator
-from airflow.operators.slack_plugin import SlackAPIUploadFileOperator
-from airflow.operators.ctffind4_plugin import Ctffind4DataSensor
-from airflow.operators.motioncor2_plugin import MotionCor2DataSensor
-from airflow.operators.fei_epu_plugin import FeiEpuOperator
-from airflow.operators.influx_plugin import FeiEpu2InfluxOperator, GenericInfluxOperator, PipelineInfluxOperator, PipelineStatsOperator, PipelineCtfOperator
-from airflow.operators.cryoem_plugin import LogbookConfigurationSensor, LogbookRegisterFileOperator, LogbookRegisterRunParamsOperator, LogbookCreateRunOperator, PipelineRegisterRunOperator, PipelineRegisterFilesOperator
+
+from bashplus_operators import BashPlusOperator
+from file_operators import FileGlobSensor, FileInfoSensor
+from slack_operators import SlackAPIUploadFileOperator
+from ctffind4_operators import Ctffind4DataSensor
+from motioncor2_operators import MotionCor2DataSensor
+from fei_epu_operators import FeiEpuOperator
+from influx_operators import FeiEpu2InfluxOperator, GenericInfluxOperator, PipelineInfluxOperator, PipelineStatsOperator, PipelineCtfOperator
+from cryoem_operators import LogbookConfigurationSensor, LogbookRegisterFileOperator, LogbookRegisterRunParamsOperator, LogbookCreateRunOperator, PipelineRegisterRunOperator, PipelineRegisterFilesOperator
 
 from airflow.exceptions import AirflowSkipException
 
