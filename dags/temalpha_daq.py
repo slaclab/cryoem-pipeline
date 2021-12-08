@@ -38,6 +38,7 @@ import os
 import logging
 LOG = logging.getLogger(__name__)
 
+
 ###
 # default args
 ###
@@ -45,17 +46,171 @@ args = {
     'owner': 'cryo-daq',
     'provide_context': True,
     'start_date': datetime(2020,1,1), 
-    'tem': 'TEMGAMMA',
-    'source_directory': '/lscratch/cryoem-daq--dev/srv/cryoem/temgamma',
-    'source_excludes':  [ '*.bin', 'cifs48*' ],
+    'tem': 'TEMALPHA',
+    'source_directory': '/srv/cryoem/temalpha',
+    'source_excludes':  [ '*.bin', '*.downloading' ],
     #'destination_directory': '/gpfs/slac/cryo/fs1/exp/',
-    'destination_directory': '/lscratch/cryoem-daq--dev/exp',
+    'destination_directory': '/sdf/group/cryoem/exp',
     'logbook_connection_id': 'cryoem_logbook',
-    'remove_files_after': '48 hours',
+    'remove_files_after': '72 hours',
     'remove_files_larger_than': '+100M',
-    'data_transfer_queue': 'dtn-temgamma', # airflow worker queue for data transfers
+    'data_transfer_queue': 'dtn-temalpha', #'dtn-temalpha', # airflow worker queue for data transfers
     'dry_run': False,
 }
+
+
+from tempfile import gettempdir, NamedTemporaryFile
+from airflow.utils.file import TemporaryDirectory
+from subprocess import Popen, STDOUT, PIPE, call
+import redis
+class RsyncDiffOperator(BaseOperator):
+    template_fields = ('env','source','target','includes','dry_run','newer')
+    template_ext = ( '.sh', '.bash' )
+    ui_color = '#f0ede4'
+
+    @apply_defaults
+    def __init__(self, source, target, newer=None, newer_offset='15 mins', do_xcom_push=True, env=None, output_encoding='utf-8', prune_empty_dirs=False, includes='', excludes='', flatten=False, dry_run=False, redis_host='redis', redis_port='6379', redis_db=4, redis_password=None, redis_key='temalpha', *args, **kwargs ):
+        super(RsyncDiffOperator, self).__init__(*args,**kwargs)
+        self.env = env
+        self.output_encoding = output_encoding
+
+        self.source = source
+        self.target = target
+
+        self.includes = includes
+        self.excludes = excludes
+        self.prune_empty_dirs = prune_empty_dirs
+        self.flatten = flatten
+        self.dry_run = dry_run
+
+        self.do_xcom_push_flag = do_xcom_push
+
+        self.redis_host = redis_host
+        self.redis_port = redis_port
+        self.redis_db = redis_db
+        self.redis_password = redis_password
+        self.redis_key = redis_key
+
+        self.newer = newer
+        self.newer_offset = newer_offset
+        logging.info("NEWER " + self.newer_offset)
+
+        self.rsync_command = ''
+
+    def execute(self, context):
+
+        def build_find_files( input, exclude=False ):
+            out = ''
+            try:
+                a = input
+                if isinstance(input, str):
+                    a = ast.literal_eval(input)
+                array = [ "%s -name '%s'" % ('!' if exclude else '', i) for i in a ]
+                out = ' '.join(array)
+            except:
+                if input:
+                    out = " %s -name '%s'" % ('!' if exclude else '', input)
+            return out
+
+        output = []
+        # LOG.info("tmp dir root location: " + gettempdir())
+        with TemporaryDirectory(prefix='airflowtmp') as tmp_dir:
+            with NamedTemporaryFile(dir=tmp_dir, prefix=self.task_id) as f:
+
+                find_arg = build_find_files( self.excludes, exclude=True ) + build_find_files( self.includes )
+                dry = True if self.dry_run.lower() == 'true' else False
+
+                newer = None
+                if self.newer and not self.newer == "None":
+                    newer = 'date -d "$(date -r ' + self.newer + ') - ' + self.newer_offset + '" +"%Y-%m-%d %H:%M:%S"'
+
+                # format rsync command
+                rsync_command = """
+STATUS=255
+( \
+  timeout 5  ls %s >/dev/null && \
+  ( find '%s/$RECYCLE.BIN/' -type f -delete 2>&1 >/dev/null || true ) \
+)
+if [ $? -eq 0 ]; then
+  rsync -a --chmod=o-rwx --exclude='$RECYCLE.BIN'  --exclude='System Volume Information' -f'+ */' -f'- *' %s %s %s && \
+  cd %s && \
+  find . -type f \( %s \) %s
+  STATUS=$?
+  [ $STATUS -eq 0 ] && find %s -type d -empty %s
+fi
+exit $STATUS
+                    """ % ( \
+                        self.source,
+                        self.source,
+                        # sync directories
+                        ' --dry-run' if dry else '',
+                        self.source,
+                        self.target,
+                        # cd
+                        self.source,
+                        # find
+                        find_arg,
+                        ' -newermt "`%s`"'%(newer,) if newer else '',
+                        # delete empty dir
+                        self.target,
+                        '' if dry else ' -delete',
+                 )
+                f.write(bytes(rsync_command, 'utf_8'))
+                f.flush()
+                fname = f.name
+                script_location = tmp_dir + "/" + fname
+                logging.info("Temporary script "
+                             "location :{0}".format(script_location))
+
+                redis_client = redis.StrictRedis( host=self.redis_host, port=self.redis_port, db=self.redis_db, password=self.redis_password )
+
+                logging.info("Running rsync command: " + rsync_command)
+                sp = Popen(
+                    ['bash', fname],
+                    stdout=PIPE, stderr=STDOUT,
+                    cwd=tmp_dir, env=self.env)
+
+                self.sp = sp
+
+                logging.info(f"Copy following files to {self.target}:")
+                for line in iter(sp.stdout.readline, b''):
+                    line = line.decode(self.output_encoding).strip()
+                    # parse for file names here
+                    if line.startswith( 'building file list' ) \
+                      or line.startswith( 'sent ') \
+                      or line.startswith( 'total size is ' ) \
+                      or line.startswith('sending incremental file list') \
+                      or '/sec' in line \
+                      or 'speedup is ' in line \
+                      or 'created directory ' in line \
+                      or line in ('', './') \
+                      or ': No such file or directory' in line \
+                      or ': Permission denied' in line \
+                      or ': failed to set permissions ' in line \
+                      or 'rsync error: ' in line \
+                      or '*** ' in line:
+                        continue
+                    else:
+                        LOG.info(line)
+                        k = f'{line} -> {self.target}'
+                        redis_client.rpush( self.redis_key, k )
+                        output.append( line )
+                sp.wait()
+                logging.info("Command exited with "
+                             "return code {0}".format(sp.returncode))
+
+                if self.do_xcom_push_flag:
+                    return [ os.path.basename(o) for o in output ]
+
+
+                if not sp.returncode == 0:
+                    raise AirflowException("rsync command failed")
+
+    def on_kill(self):
+        LOG.info('Sending SIGTERM signal to bash subprocess')
+        self.sp.terminate()
+
+
 
 
 
@@ -155,7 +310,24 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
         chmod='ug+x,u+rw,g+r,g-w,o-rwx',
         flatten=False,
         priority_weight=50,
-        newer="{{ ti.xcom_pull(task_ids='last_rsync') }}"
+        parallel=5,
+        newer="{{ ti.xcom_pull(task_ids='last_rsync') }}",
+        newer_offset='15 mins'
+    )
+
+    file_diff = RsyncDiffOperator( task_id='file_diff',
+        queue=str(args['data_transfer_queue']),
+        dry_run=str(args['dry_run']),
+        source=args['source_directory']+'/',
+        target="{{ ti.xcom_pull(task_ids='sample_directory') }}",
+        excludes=args['source_excludes'],
+        prune_empty_dirs=True,
+        flatten=False,
+        priority_weight=50,
+        newer="{{ ti.xcom_pull(task_ids='last_rsync') }}",
+        newer_offset='15 mins',
+        redis_password=Variable.get('redis_password'),
+        redis_key=args['tem'].lower(),
     )
 
     has_gain_refs = HasFilesOperator( task_id='has_gain_refs',
@@ -199,7 +371,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
         """,
         params={
             'source_directory': args['source_directory'],
-            'file_glob': "\( -name 'FoilHole_*_Data_*.mrc' -o -name 'FoilHole_*_Data_*.dm4' -o -name '*.tif' -o -name '*.tiff' \)",
+            'file_glob': "\( -name 'FoilHole_*_Data_*.mrc' -o -name 'FoilHole_*_Data_*.dm4' -o -name '*.tif' -o -name '*.tiff' -o -name '*.eer' \)",
             'age': args['remove_files_after'],
             'size': args['remove_files_larger_than'],
             'dry_run': False
@@ -240,6 +412,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
         queue=str(args['data_transfer_queue']),
         trigger_dag_id="{{ ti.xcom_pull( task_ids='config', key='experiment' ) }}_{{ ti.xcom_pull( task_ids='config', key='sample' )['guid'] }}",
         dry_run=str(args['dry_run']),
+        trigger_rule="all_done",
     )
 
     ###
@@ -264,13 +437,14 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
         token=Variable.get('slack_token'),
         users="{{ ti.xcom_pull( task_ids='config', key='collaborators' ) }}",
         usermap_file='/usr/local/airflow/dags/slack_users.yaml',
-        default_users="U01J55YT02V,W8UP7EHED,W9RUM1ET1,WMLGZAGVD,W8WBPL02K"
+        default_users="WMLGZAGVD,W016J913JF7,W8UP7EHED,W9RUM1ET1"
     )
 
     ###
     # define pipeline
     ###
     config >> sample_directory >> touch >> rsync >> delete >> untouch
+    touch >> file_diff
     sample_directory >> sample_symlink
     config >> last_rsync >> rsync >> trigger
     sample_directory >> setfacl

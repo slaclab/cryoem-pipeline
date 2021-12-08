@@ -25,8 +25,8 @@ from file_operators import RsyncOperator, ExtendedAclOperator
 # from tempfile import gettempdir, NamedTemporaryFile
 # from airflow.utils.file import TemporaryDirectory
 
-from trigger_operators import TriggerMultiDagRunOperator
 from slack_operators import SlackAPIEnsureChannelOperator, SlackAPIInviteToChannelOperator
+from trigger_operators import TriggerMultiDagRunOperator
 
 from airflow.exceptions import AirflowException, AirflowSkipException
 
@@ -50,7 +50,7 @@ LOG = logging.getLogger(__name__)
 # default args
 ###
 args = {
-    'owner': 'yee',
+    'owner': 'cryo-daq',
     'provide_context': True,
     'start_date': datetime(2018,1,1), 
     'tem': 'TEM4',
@@ -208,7 +208,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
 
             # wait until dag is registered
             echo unpause...
-            while [ `airflow unpause ${DAG} | grep \", paused: False\" | wc -l` -eq 0 ]; do
+            while [ `airflow dags unpause ${DAG} | grep \", paused: False\" | wc -l` -eq 0 ]; do
                 echo waiting...
                 sleep 60
             done

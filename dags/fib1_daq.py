@@ -17,15 +17,14 @@ from airflow.operators.bash_operator import BashOperator
 
 from airflow.operators.trigger_dagrun import TriggerDagRunOperator
 
+from bashplus_operators import BashPlusOperator
 from cryoem_operators import LogbookConfigurationSensor, LogbookCreateRunOperator
-from file_operators import RsyncOperator, ExtendedAclOperator
-
-# from subprocess import Popen, STDOUT, PIPE, call
-# from tempfile import gettempdir, NamedTemporaryFile
-# from airflow.utils.file import TemporaryDirectory
-
+from file_operators import RsyncOperator, ExtendedAclOperator, HasFilesOperator
 from slack_operators import SlackAPIEnsureChannelOperator, SlackAPIInviteToChannelOperator
 from trigger_operators import TriggerMultiDagRunOperator
+
+from airflow.providers.slack.operators.slack import SlackAPIOperator, SlackAPIPostOperator
+from slackclient import SlackClient
 
 from airflow.exceptions import AirflowException, AirflowSkipException
 
@@ -34,13 +33,13 @@ from airflow.hooks.http_hook import HttpHook
 from airflow.models import DagRun, DagBag
 from airflow.utils.state import State
 
-
 from pathlib import Path
 from datetime import datetime
 from time import sleep
 import re
+import glob
 import os
-# from ast import literal_eval
+import subprocess
 
 import logging
 LOG = logging.getLogger(__name__)
@@ -51,16 +50,60 @@ LOG = logging.getLogger(__name__)
 args = {
     'owner': 'cryo-daq',
     'provide_context': True,
-    'start_date': datetime(2018,1,1), 
-    'tem': 'TEM2',
-    'source_directory': '/srv/cryoem/tem2',
-    'source_excludes':  [ '*.bin', ],
-    'destination_directory': '/gpfs/slac/cryo/fs1/exp/',
+    'start_date': datetime(2020,1,1), 
+    'tem': 'FIB1',
+    'source_directory': '/srv/cryoem/fib1',
+    'source_excludes':  [ '*.bin', 'cifs48*' ],
+    'destination_directory': '/sdf/group/cryoem/exp', 
+    #'destination_directory': '/gpfs/slac/cryo/fs1/exp/',
     'logbook_connection_id': 'cryoem_logbook',
-    'remove_files_after': '4 hours',
+    'remove_files_after': '8 hours',
     'remove_files_larger_than': '+100M',
+    'data_transfer_queue': 'dtn', # airflow worker queue for data transfers
     'dry_run': False,
 }
+
+
+
+
+
+class SlackAPIMultiUploadFileOperator(SlackAPIOperator):
+    template_fields = ('channel',)
+    ui_color = '#FFBA40'
+
+    @apply_defaults
+    def __init__(self,
+                 channel='#general',
+                 xcom='previews',
+                 *args, **kwargs):
+        self.method = 'files.upload'
+        self.channel = channel
+        self.xcom = xcom
+        super(SlackAPIMultiUploadFileOperator, self).__init__(method=self.method,
+                                                   *args, **kwargs)
+
+    def construct_api_call_params(self, filepath ):
+        title = '.'.join( os.path.basename(filepath).split('.')[:-1] )
+        return {
+            'channels': self.channel,
+            'filename': title,
+            'title': title,
+        }
+
+    def execute(self, context, **kwargs):
+        sc = SlackClient(self.token)
+        filepaths = context['ti'].xcom_pull( task_ids=self.xcom ) 
+        LOG.info( f"FILEPATHS: {filepaths}" )
+        for filepath in filepaths:
+            params = self.construct_api_call_params(filepath)
+            with open( filepath, 'rb' ) as f:
+                params['file'] = f
+                rc = sc.api_call(self.method, **params)
+                logging.info("sending: %s" % (params,))
+                if not rc['ok']:
+                    logging.error("Slack API call failed {}".format(rc['error']))
+                    raise AirflowException("Slack API call failed: {}".format(rc['error']))
+
 
 
 
@@ -81,36 +124,42 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     # read and pase the configuration file for the experiment
     ###
     config = LogbookConfigurationSensor(task_id='config',
+        queue=str(args['data_transfer_queue']),
         http_hook=logbook_hook,
         microscope=args['tem'],
-        base_directory=args['destination_directory']
+        base_directory=args['destination_directory'],
+        ignore_older_than=60,
     )
 
     ###
     # make sure we have a directory to write to; also create the symlink
     ###
     sample_directory = BashOperator( task_id='sample_directory',
-        bash_command = "timeout 5 mkdir -p {{ ti.xcom_pull(task_ids='config',key='experiment_directory') }}/{{ ti.xcom_pull(task_ids='config',key='sample')['guid'] }}/raw/ && echo {{ ti.xcom_pull(task_ids='config',key='experiment_directory') }}/{{ ti.xcom_pull(task_ids='config',key='sample')['guid'] }}/raw/",
+        queue=str(args['data_transfer_queue']),
+        bash_command = "mkdir -p %s/{{ ti.xcom_pull(task_ids='config',key='directory_suffix') }}/{{ ti.xcom_pull(task_ids='config',key='sample')['guid'] }}/raw/ && chmod o-rwx %s/{{ ti.xcom_pull(task_ids='config',key='directory_suffix') }} && echo %s/{{ ti.xcom_pull(task_ids='config',key='directory_suffix') }}/{{ ti.xcom_pull(task_ids='config',key='sample')['guid'] }}/raw/" % (args['destination_directory'],args['destination_directory'],args['destination_directory']),
         do_xcom_push=True
     )
     
     sample_symlink = BashOperator( task_id='sample_symlink',
+        queue=str(args['data_transfer_queue']),
         bash_command = """
-        cd {{ ti.xcom_pull(task_ids='config',key='experiment_directory') }}/
+        cd %s/{{ ti.xcom_pull(task_ids='config',key='directory_suffix') }}/
         if [ ! -L {{ ti.xcom_pull(task_ids='config',key='sample')['name'] }}  ]; then
             ln -s {{ ti.xcom_pull(task_ids='config',key='sample')['guid'] }} {{ ti.xcom_pull(task_ids='config',key='sample')['name'] }} 
         fi
-        """
+        """ % args['destination_directory'],
     )
 
     setfacl = ExtendedAclOperator( task_id='setfacl',
-        directory="{{ ti.xcom_pull(task_ids='config',key='experiment_directory') }}",
+        queue=str(args['data_transfer_queue']),
+        directory="%s/{{ ti.xcom_pull(task_ids='config',key='directory_suffix') }}" % args['destination_directory'],
         users="{{ ti.xcom_pull(task_ids='config',key='collaborators') }}",
     )
 
 
 
     last_rsync = BashOperator( task_id='last_rsync',
+        queue=str(args['data_transfer_queue']),
         bash_command="""
         if [ ! -d {{ params.directory }} ]; then
           mkdir {{ params.directory }}
@@ -129,11 +178,11 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     # use this file as an anchor for which files to care about
     ###
     touch = BashOperator( task_id='touch',
+        queue=str(args['data_transfer_queue']),
         bash_command="""
-        mkdir {{ params.directory }}
-        cd {{ params.directory }}
+        [ -d "{{ params.directory }}/../" ] && mkdir -p {{ params.directory }}
         TS=$(date '+%Y%m%d_%H%M%S')
-        touch {{ params.prefix }}${TS}
+        cd {{ params.directory }} && touch {{ params.prefix }}${TS}
         """,
         params={
             'directory': args['destination_directory'] + '/.daq/',
@@ -145,6 +194,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     # rsync the globbed files over and store on target without hierachy
     ###
     rsync = RsyncOperator( task_id='rsync',
+        queue=str(args['data_transfer_queue']),
         dry_run=str(args['dry_run']),
         source=args['source_directory']+'/',
         target="{{ ti.xcom_pull(task_ids='sample_directory') }}",
@@ -156,17 +206,8 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
         newer="{{ ti.xcom_pull(task_ids='last_rsync') }}"
     )
 
-    gain_refs = RsyncOperator( task_id='gain_refs',
-        dry_run=str(args['dry_run']),
-        source='%s-gainrefs/' % args['source_directory'],
-        target="{{ ti.xcom_pull(task_ids='sample_directory') }}/GainRefs/",
-        includes="*.dm4",
-        chmod='ug+x,u+rw,g+r,g-w,o-rwx',
-        flatten=False,
-        priority_weight=50,
-    )
-
     untouch = BashOperator( task_id='untouch',
+        queue=str(args['data_transfer_queue']),
         bash_command="""
         cd {{ params.directory }}
         if [ `ls -1 -t -A {{ params.prefix }}* | wc -l` -gt 1 ]; then
@@ -174,7 +215,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
         fi
         """,
         params={
-            'directory': args['destination_directory'] + '.daq/',
+            'directory': args['destination_directory'] + '/.daq/',
             'prefix': args['tem'] + '_sync_'
         }
     )
@@ -184,6 +225,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     ###
     # newer = 'date -d "$(date -r ' + self.newer + ') - ' + self.newer_offset + '" +"%Y-%m-%d %H:%M:%S"'
     delete = BashOperator( task_id='delete',
+        queue=str(args['data_transfer_queue']),
         bash_command="""
             find {{ params.source_directory }} {{ params.file_glob }} -type f ! -newermt "`date -d "$(date -r {{ ti.xcom_pull(task_ids='last_rsync') }}) -  {{ params.age }}" +"%Y-%m-%d %H:%M:%S"`" -size {{ params.size }} -print {% if not params.dry_run %}-delete{% endif %} | grep -v "Permission denied" | true
         """,
@@ -196,27 +238,35 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
         }
     )
 
+    def previews_operator(**kwargs):
+      dir = kwargs['ti'].xcom_pull(task_ids='sample_directory')
+      filepaths = []
+      for f in kwargs['ti'].xcom_pull(task_ids='rsync'):
+        these = glob.glob( f'{dir}/**/{f}', recursive=True )
+        #LOG.info(f"found: {these}")
+        filepaths = filepaths + these
+      jpgs = []
+      for f in filepaths:
+        skip = True
+        for ex in ( '.tif', '.tiff', '.jpg', '.png' ):
+          if ex in f:
+            skip = False
+        if not skip:
+          jpg = '.'.join( f.split('.')[:-1] ) + '.jpg'
+          command = f"convert {f} {jpg}"
+          LOG.info( f'Running {command}' )
+          subprocess.call( command.split() )
+          jpgs.append( jpg )
+      if len(jpgs) == 0:
+      #if len(filepaths) == 0:
+        raise AirflowSkipException("No data")
+      kwargs['ti'].do_xcom_push(key='return_value', value=jpgs)
+      #kwargs['ti'].do_xcom_push(key='return_value', value=filepaths)
 
-    pipeline = BashOperator( task_id='pipeline',
-        bash_command="""
-        export DAG=\"{{ ti.xcom_pull(task_ids='config',key='experiment') }}_{{ ti.xcom_pull(task_ids='config',key='sample')['guid'] }}\"
-        if [ `airflow list_dags | grep ${DAG} | wc -l` -eq 0 ]; then
-            echo copying ${DAG}
-            # {{ ti.xcom_pull(task_ids='config',key='sample')['params']['imaging_method'] }}
-            cp /usr/local/airflow/dags/pipeline_{{ ti.xcom_pull(task_ids='config',key='sample')['params']['imaging_method'] }}_pre-processing-new.py /usr/local/airflow/dags/${DAG}.py
-            sed -i \"s/__imaging_software__/{{ ti.xcom_pull(task_ids='config',key='sample')['params']['imaging_software'] }}/g\" /usr/local/airflow/dags/${DAG}.py
-
-            # wait until dag is registered
-            echo unpause...
-            while [ `airflow dags unpause ${DAG} | grep \", paused: False\" | wc -l` -eq 0 ]; do
-                echo waiting...
-                sleep 60
-            done
-
-        else
-            echo ${DAG} registered
-        fi
-        """
+    previews = PythonOperator( task_id='previews',
+        queue='cpu',
+        provide_context=True,
+        python_callable=previews_operator,
     )
 
 
@@ -225,30 +275,38 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     ###
     # trigger another daq to handle the rest of the pipeline
     ###
-    trigger = TriggerMultiDagRunOperator( task_id='trigger',
-        trigger_dag_id="{{ ti.xcom_pull( task_ids='config', key='experiment' ) }}_{{ ti.xcom_pull( task_ids='config', key='sample' )['guid'] }}",
-        dry_run=str(args['dry_run']),
-    )
+    #trigger = TriggerMultiDagRunOperator( task_id='trigger',
+    #    queue=str(args['data_transfer_queue']),
+    #    trigger_dag_id="{{ ti.xcom_pull( task_ids='config', key='experiment' ) }}_{{ ti.xcom_pull( task_ids='config', key='sample' )['guid'] }}",
+    #    dry_run=str(args['dry_run']),
+    #)
 
     ###
     # register the runs into the logbook
     ###
-    runs = LogbookCreateRunOperator( task_id='runs',
-       http_hook=logbook_hook,
-       experiment="{{ ti.xcom_pull( task_ids='config', key='experiment' ).split('_')[0] }}",
-       retries=3, 
-    ) 
+    #runs = LogbookCreateRunOperator( task_id='runs',
+    #   http_hook=logbook_hook,
+    #   experiment="{{ ti.xcom_pull( task_ids='config', key='experiment' ).split('_')[0] }}",
+    #   retries=3, 
+    #) 
 
     slack_channel = SlackAPIEnsureChannelOperator( task_id='slack_channel',
+        queue=str(args['data_transfer_queue']),
         channel="{{ ti.xcom_pull( task_ids='config', key='experiment' )[:21] | replace( ' ', '' ) | lower }}",
         token=Variable.get('slack_token'),
-        retries=2,
     )
     slack_users = SlackAPIInviteToChannelOperator( task_id='slack_users',
+        queue=str(args['data_transfer_queue']),
         channel="{{ ti.xcom_pull( task_ids='config', key='experiment' )[:21] | replace( ' ', '' ) | lower }}",
         token=Variable.get('slack_token'),
         users="{{ ti.xcom_pull( task_ids='config', key='collaborators' ) }}",
-        default_users="W9RUM1ET1,WAM16PCR2"
+        usermap_file='/usr/local/airflow/dags/slack_users.yaml',
+        default_users="W018287MVEK,W9RUM1ET1,WMLGZAGVD",
+    )
+    slack_previews = SlackAPIMultiUploadFileOperator( task_id='slack_previews',
+        channel="{{ ti.xcom_pull( task_ids='config', key='experiment' )[:21] | replace( ' ', '' ) | lower }}",
+        token=Variable.get('slack_' + os.path.splitext(os.path.basename(__file__))[0].split('_')[0].lower() ),
+        xcom="previews",
     )
 
     ###
@@ -256,9 +314,12 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     ###
     config >> sample_directory >> touch >> rsync >> delete >> untouch
     sample_directory >> sample_symlink
-    config >> last_rsync >> rsync >> trigger
+    config >> last_rsync >> rsync # >> trigger
     sample_directory >> setfacl
-    config >> pipeline >> trigger
-    rsync >> runs
+    #config >> pipeline >> trigger
+    
+    #rsync >> runs
     config >> slack_channel >> slack_users
-    last_rsync >> gain_refs
+    slack_channel >> previews
+    rsync >> previews
+    previews >> slack_previews
