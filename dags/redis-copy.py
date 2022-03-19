@@ -20,6 +20,8 @@ PORT = os.environ['REDIS_SERVICE_PORT']
 
 BATCH = 25 
 
+ZOMBIE_THRESHOLD = 500
+
 DB = 4
 if 'REDIS_RSYNC_DB' in os.environ:
   DB = os.environ['REDIS_RSYNC_DB']
@@ -63,6 +65,20 @@ def get_files( client, batch_size=BATCH, exclude=['.xml',] ):
       pass
   return transfer
 
+def get_zombie_count():
+  logging.info(f"Checking for zombie processes" )
+  defunct_count_cmd = "ps ux | grep defunct | wc -l"
+  logging.info(f">> {cmd}")
+  zombie_count = subprocess.getoutput( defunct_count_cmd )
+  logging.info(f"{zombie_count} zombies found")
+  return zombie_count
+
+def double_tap(): # stop the running container and let pod restart it without zombie infection
+  double_tap_cmd = "kill -INT 1"
+  logging.info(f"Killing zombies")
+  logging.info(f">>{double_tap_cmd}")
+  headshot = subprocess.getoutput( double_tap_cmd )
+  return  
 
 # write to temp file to pipe into parallel
 transfers = get_files( client, batch_size=BATCH )
@@ -72,18 +88,22 @@ for target, files in iter(transfers.items()):
   with NamedTemporaryFile(dir='/tmp', prefix='redis-copy.', delete=True ) as f:
     f.write( ( '\n'.join( files ) + '\n' ).encode(encoding='UTF-8') )
     f.flush()
-    logging.info("TRANSFER: %s" % (files,))
-    cmd = "cat %s | grep -vE '^$' | SHELL=/bin/sh parallel --gnu --linebuffer --jobs=%s 'rsync -av %s%s {} %s/{//}/'" % ( f.name, PARALLEL, '--dry-run' if DRY_RUN else '', CHMOD, target ) 
-    logging.info(f">> {cmd}")
-    out = subprocess.getoutput( cmd ) 
-    logging.info( f"{out}" )
-    # rsync will spit out filenames of stuff that copied, so we grep for these, and remove them from files
-    for o in out.split('\n'):
-      if 'sending incremental file list' in o \
-        or ' bytes/sec' in o \
-        or o == '' \
-        or 'total size is ' in o:
-        continue;
-      #logging.info(" copied over: %s" % (o,) )
-      copied.append( o )
+    zombie_count = get_zombie_count()
+    if zombie_count > ZOMBIE_THRESHOLD:
+      double_tap()
+    else:
+      logging.info("TRANSFER: %s" % (files,))
+      cmd = "cat %s | grep -vE '^$' | SHELL=/bin/sh parallel --gnu --linebuffer --jobs=%s 'rsync -av %s%s {} %s/{//}/'" % ( f.name, PARALLEL, '--dry-run' if DRY_RUN else '', CHMOD, target ) 
+      logging.info(f">> {cmd}")
+      out = subprocess.getoutput( cmd ) 
+      logging.info( f"{out}" )
+      # rsync will spit out filenames of stuff that copied, so we grep for these, and remove them from files
+      for o in out.split('\n'):
+        if 'sending incremental file list' in o \
+          or ' bytes/sec' in o \
+          or o == '' \
+          or 'total size is ' in o:
+          continue;
+        #logging.info(" copied over: %s" % (o,) )
+        copied.append( o )
   logging.info("COPIED: %s" % (copied,))
