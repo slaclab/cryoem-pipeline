@@ -66,18 +66,28 @@ def get_files( client, batch_size=BATCH, exclude=['.xml',] ):
   return transfer
 
 def get_zombie_count():
+  zombie_count = 0
   logging.info(f"Checking for zombie processes" )
   defunct_count_cmd = "ps ux | grep defunct | wc -l"
   logging.info(f">> {cmd}")
-  zombie_count = subprocess.getoutput( defunct_count_cmd )
-  logging.info(f"{zombie_count} zombies found")
-  return zombie_count
+  try:
+    zombie_count = subprocess.check_output( defunct_count_cmd )
+    logging.info(f"{zombie_count} zombies found")
+  except subprocess.CalledProcessError as e:
+    logging.warn("Error attempting to get zombie count.")
+    logging.warn("Error %s: %s" % (e.errorcode, e.output))
+    pass
+  return int(zombie_count)
 
 def double_tap(): # stop the running container and let pod restart it without zombie infection
   double_tap_cmd = "kill -INT 1"
-  logging.info(f"Killing zombies")
-  logging.info(f">>{double_tap_cmd}")
-  headshot = subprocess.getoutput( double_tap_cmd )
+  try:
+    logging.info(f"Killing zombies...")
+    logging.info(f">>{double_tap_cmd}")
+    headshot = subprocess.check_output( double_tap_cmd )
+  except subprocess.CalledProcessError as e:
+    logging.warn("Error killing running container")
+    logging.warn("Error %s: %s" % (e.errorcode, e.output))
   return  
 
 # write to temp file to pipe into parallel
