@@ -98,22 +98,21 @@ for target, files in iter(transfers.items()):
   with NamedTemporaryFile(dir='/tmp', prefix='redis-copy.', delete=True ) as f:
     f.write( ( '\n'.join( files ) + '\n' ).encode(encoding='UTF-8') )
     f.flush()
-    zombie_count = get_zombie_count()
-    if zombie_count > ZOMBIE_THRESHOLD:
-      double_tap()
-    else:
-      logging.info("TRANSFER: %s" % (files,))
-      cmd = "cat %s | grep -vE '^$' | SHELL=/bin/sh parallel --gnu --linebuffer --jobs=%s 'rsync -av %s%s {} %s/{//}/'" % ( f.name, PARALLEL, '--dry-run' if DRY_RUN else '', CHMOD, target ) 
-      logging.info(f">> {cmd}")
-      out = subprocess.getoutput( cmd ) 
-      logging.info( f"{out}" )
-      # rsync will spit out filenames of stuff that copied, so we grep for these, and remove them from files
-      for o in out.split('\n'):
-        if 'sending incremental file list' in o \
-          or ' bytes/sec' in o \
-          or o == '' \
-          or 'total size is ' in o:
-          continue;
-        #logging.info(" copied over: %s" % (o,) )
-        copied.append( o )
+    logging.info("TRANSFER: %s" % (files,))
+    cmd = "cat %s | grep -vE '^$' | SHELL=/bin/sh parallel --gnu --linebuffer --jobs=%s 'rsync -av %s%s {} %s/{//}/'" % ( f.name, PARALLEL, '--dry-run' if DRY_RUN else '', CHMOD, target ) 
+    logging.info(f">> {cmd}")
+    out = subprocess.getoutput( cmd ) 
+    logging.info( f"{out}" )
+    # rsync will spit out filenames of stuff that copied, so we grep for these, and remove them from files
+    for o in out.split('\n'):
+      if 'sending incremental file list' in o \
+        or ' bytes/sec' in o \
+        or o == '' \
+        or 'total size is ' in o:
+        continue;
+      #logging.info(" copied over: %s" % (o,) )
+      copied.append( o )
   logging.info("COPIED: %s" % (copied,))
+  zombie_count = get_zombie_count()
+  if zombie_count > ZOMBIE_THRESHOLD:
+    double_tap()
