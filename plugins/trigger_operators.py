@@ -2,8 +2,7 @@
 
 from airflow.plugins_manager import AirflowPlugin
 
-from airflow.operators.trigger_dagrun import TriggerDagRunOperator
-from airflow_multi_dagrun.operators import TriggerMultiDagRunOperator
+from airflow.operators.dagrun_operator import TriggerDagRunOperator, DagRunOrder
 from airflow.exceptions import AirflowException, AirflowSkipException
 
 from airflow import settings
@@ -87,7 +86,7 @@ def trigger_preprocessing(context):
         name = context['ti'].xcom_pull( task_ids='config', key='experiment' )
 
         run_id = '%s__%s' % (name, base_filename)
-        #dro = DagRunOrder(run_id=run_id)
+        dro = DagRunOrder(run_id=run_id)
 
         d = sample['params']
 
@@ -100,9 +99,7 @@ def trigger_preprocessing(context):
 
         # only do single-particle 
         LOG.info('triggering run id %s with %s' % (run_id,d))
-        #dro.payload = d
-        #yield dro
-        dro = {'run_id': run_id, 'payload': payload}
+        dro.payload = d
         yield dro
     return
 
@@ -123,12 +120,12 @@ def create_session():
     finally:
         session.close()
 
-class TriggerMultiDagRunOperator(TriggerDagRunOperator):
+class TriggerMultipleDagRunOperator(TriggerDagRunOperator):
     template_fields = ('trigger_dag_id', 'dry_run' )
     def __init__(self, dry_run=False, *args,**kwargs):
         self.dry_run = dry_run
-        self.python_callable = trigger_preprocessing
-        super( TriggerMultiDagRunOperator, self ).__init__( *args, **kwargs )
+        kwargs['python_callable'] = trigger_preprocessing
+        super( TriggerMultipleDagRunOperator, self ).__init__( *args, **kwargs )
     def execute(self, context):
         count = 0
         self.python_callable = trigger_preprocessing
@@ -142,9 +139,9 @@ class TriggerMultiDagRunOperator(TriggerDagRunOperator):
                     if dro and not dry:
                         try:
                             dr = trigger_dag.create_dagrun(
-                                run_id=dro['run_id'],
+                                run_id=dro.run_id,
                                 state=State.RUNNING,
-                                conf=dro['payload'],
+                                conf=dro.payload,
                                 external_trigger=True)
                             # LOG.info("Creating DagRun %s", dr)
                             session.add(dr)
@@ -160,4 +157,4 @@ class TriggerMultiDagRunOperator(TriggerDagRunOperator):
 
 class TriggerPlugin(AirflowPlugin):
     name = 'trigger_plugin'
-    operators = [TriggerMultiDagRunOperator,]
+    operators = [TriggerMultipleDagRunOperator,]

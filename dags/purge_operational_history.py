@@ -26,10 +26,11 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     ) as dag:
 
     item = []
-    tables = ( 'airflow_stats_to_influx', 'tem1_daq', 'tem2_daq', 'tem3_daq', 'tem4_daq', 'daq_cleanup', 'experiment_cleanup', )
+    tables = ( 'airflow_stats_to_influx', 'tem1_daq', 'tem2_daq', 'tem3_daq', 'tem4_daq', 'temalpha_daq', 'tembeta_daq', 'temgamma_daq', 'fib1_daq', 'daq_cleanup', 'experiment_cleanup', )
     for table in tables:
 
         MyPostgresOperator(task_id='purge_%s' % table, 
+            queue='dtn',
             database="airflow",
             sql="""
             delete from xcom where dag_id = '{table}' and execution_date < NOW() - interval '1 day';
@@ -42,6 +43,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
         )
 
     BashOperator( task_id='purge_log_files',
+        queue='dtn',
         bash_command="""
 find /usr/local/airflow/logs -mtime +7 -print -delete
 """)

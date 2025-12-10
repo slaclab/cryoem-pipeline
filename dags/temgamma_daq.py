@@ -15,12 +15,13 @@ from airflow.models import BaseOperator
 from airflow.operators.python_operator import PythonOperator, ShortCircuitOperator
 from airflow.operators.bash_operator import BashOperator
 
-from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.operators.dagrun_operator import TriggerDagRunOperator, DagRunOrder
 
-from cryoem_operators import LogbookConfigurationSensor, LogbookCreateRunOperator
-from file_operators import RsyncOperator, ExtendedAclOperator, HasFilesOperator
-from slack_operators import SlackAPIEnsureChannelOperator, SlackAPIInviteToChannelOperator
-from trigger_operators import TriggerMultiDagRunOperator
+from airflow.operators.cryoem_plugin import LogbookConfigurationSensor, LogbookCreateRunOperator
+from airflow.operators.file_plugin import RsyncOperator, ExtendedAclOperator, HasFilesOperator
+
+from airflow.operators.trigger_plugin import TriggerMultipleDagRunOperator
+from airflow.operators.slack_plugin import SlackAPIEnsureChannelOperator, SlackAPIInviteToChannelOperator
 
 from airflow.exceptions import AirflowException, AirflowSkipException
 
@@ -46,12 +47,13 @@ args = {
     'provide_context': True,
     'start_date': datetime(2020,1,1), 
     'tem': 'TEMGAMMA',
-    'source_directory': '/lscratch/cryoem-daq--dev/srv/cryoem/temgamma',
+    'source_directory': '/srv/cryoem/temgamma',
     'source_excludes':  [ '*.bin', 'cifs48*' ],
     #'destination_directory': '/gpfs/slac/cryo/fs1/exp/',
-    'destination_directory': '/lscratch/cryoem-daq--dev/exp',
+    'destination_directory': '/sdf/group/cryoem/exp',
     'logbook_connection_id': 'cryoem_logbook',
-    'remove_files_after': '48 hours',
+    'remove_files_after': '12 hours',
+    #'remove_files_after': '24 hours',
     'remove_files_larger_than': '+100M',
     'data_transfer_queue': 'dtn-temgamma', # airflow worker queue for data transfers
     'dry_run': False,
@@ -89,7 +91,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     sample_directory = BashOperator( task_id='sample_directory',
         queue=str(args['data_transfer_queue']),
         bash_command = "mkdir -p %s/{{ ti.xcom_pull(task_ids='config',key='directory_suffix') }}/{{ ti.xcom_pull(task_ids='config',key='sample')['guid'] }}/raw/ && chmod o-rwx %s/{{ ti.xcom_pull(task_ids='config',key='directory_suffix') }} && echo %s/{{ ti.xcom_pull(task_ids='config',key='directory_suffix') }}/{{ ti.xcom_pull(task_ids='config',key='sample')['guid'] }}/raw/" % (args['destination_directory'],args['destination_directory'],args['destination_directory']),
-        do_xcom_push=True
+        xcom_push=True
     )
     
     sample_symlink = BashOperator( task_id='sample_symlink',
@@ -123,7 +125,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
             'directory': args['destination_directory'] + '/.daq/',
             'prefix': args['tem'] + '_sync_'
         },
-        do_xcom_push=True,
+        xcom_push=True,
     )
 
     ###
@@ -195,7 +197,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     delete = BashOperator( task_id='delete',
         queue=str(args['data_transfer_queue']),
         bash_command="""
-            find {{ params.source_directory }} {{ params.file_glob }} -type f ! -newermt "`date -d "$(date -r {{ ti.xcom_pull(task_ids='last_rsync') }}) -  {{ params.age }}" +"%Y-%m-%d %H:%M:%S"`" -size {{ params.size }} -print {% if not params.dry_run %}-delete{% endif %} | grep -v "Permission denied" | true
+            find {{ params.source_directory }} \( -name '$RECYCLE.BIN' -o -name 'System Volume Information' -o -name 'WindowsImageBackup' \) -type d -prune -o {{ params.file_glob }} -type f ! -newermt "`date -d "$(date -r {{ ti.xcom_pull(task_ids='last_rsync') }}) -  {{ params.age }}" +"%Y-%m-%d %H:%M:%S"`" -size {{ params.size }} -print0 {% if not params.dry_run %}| xargs -0 rm -f{% endif %} | grep -v "Permission denied" | true
         """,
         params={
             'source_directory': args['source_directory'],
@@ -219,7 +221,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
 
             # wait until dag is registered
             echo unpause...
-            while [ `airflow dags unpause ${DAG} | grep \", paused: False\" | wc -l` -eq 0 ]; do
+            while [ `airflow unpause ${DAG} | grep \", paused: False\" | wc -l` -eq 0 ]; do
                 echo waiting...
                 sleep 60
             done
@@ -236,7 +238,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     ###
     # trigger another daq to handle the rest of the pipeline
     ###
-    trigger = TriggerMultiDagRunOperator( task_id='trigger',
+    trigger = TriggerMultipleDagRunOperator( task_id='trigger',
         queue=str(args['data_transfer_queue']),
         trigger_dag_id="{{ ti.xcom_pull( task_ids='config', key='experiment' ) }}_{{ ti.xcom_pull( task_ids='config', key='sample' )['guid'] }}",
         dry_run=str(args['dry_run']),
@@ -260,11 +262,12 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     slack_users = SlackAPIInviteToChannelOperator( task_id='slack_users',
         queue=str(args['data_transfer_queue']),
         channel="{{ ti.xcom_pull( task_ids='config', key='experiment' ) | replace( ' ', '' ) | lower }}",
+        #channel="{{ ti.xcom_pull( task_ids='slack_channel', key='return_value' )['group_id'] }}",
         #channel="{{ ti.xcom_pull( task_ids='config', key='experiment' ) | replace( ' ', '' ) | lower }}",
         token=Variable.get('slack_token'),
         users="{{ ti.xcom_pull( task_ids='config', key='collaborators' ) }}",
         usermap_file='/usr/local/airflow/dags/slack_users.yaml',
-        default_users="U01J55YT02V,W8UP7EHED,W9RUM1ET1,WMLGZAGVD,W8WBPL02K"
+        default_users="U01J55YT02V,W8WBPL02K,W9RUM1ET1,U03K7TYAMKM,W01AN7SMBR9"
     )
 
     ###

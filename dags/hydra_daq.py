@@ -51,15 +51,15 @@ args = {
     'owner': 'cryo-daq',
     'provide_context': True,
     'start_date': datetime(2020,1,1), 
-    'tem': 'FIB1',
-    'source_directory': '/srv/cryoem/fib1',
+    'tem': 'HYDRA',
+    'source_directory': '/srv/cryoem/hydra',
     'source_excludes':  [ '*.bin', 'cifs48*' ],
     'destination_directory': '/sdf/group/cryoem/exp', 
     #'destination_directory': '/gpfs/slac/cryo/fs1/exp/',
     'logbook_connection_id': 'cryoem_logbook',
-    'remove_files_after': '8 hours',
+    'remove_files_after': '48 hours',
     'remove_files_larger_than': '+100M',
-    'data_transfer_queue': 'dtn-fib1', # airflow worker queue for data transfers
+    'data_transfer_queue': 'dtn-hydra', # airflow worker queue for data transfers
     'dry_run': False,
 }
 
@@ -95,17 +95,18 @@ class SlackAPIMultiUploadFileOperator(SlackAPIOperator):
         filepaths = context['ti'].xcom_pull( task_ids=self.xcom ) 
         LOG.info( f"FILEPATHS: {filepaths}" )
         for filepath in filepaths:
-            params = self.construct_api_call_params(filepath)
-            with open( filepath, 'rb' ) as f:
-                params['file'] = f
-                rc = sc.api_call(self.method, **params)
-                logging.info("sending: %s" % (params,))
-                if not rc['ok']:
-                    logging.error("Slack API call failed {}".format(rc['error']))
-                    raise AirflowException("Slack API call failed: {}".format(rc['error']))
-
-
-
+            if not filepath.endswith('.jpg') or not filepath.endswith('.jpeg'):
+                continue
+            else:
+                params = self.construct_api_call_params(filepath)
+                with open( filepath, 'rb' ) as f:
+                    params['file'] = f
+                    params['filetype'] = 'jpg'
+                    rc = sc.api_call(self.method, **params)
+                    logging.info("sending: %s" % (params,))
+                    if not rc['ok']:
+                        logging.error("Slack API call failed {}".format(rc['error']))
+                        raise AirflowException("Slack API call failed: {}".format(rc['error']))
 
 with DAG( os.path.splitext(os.path.basename(__file__))[0],
         description="Stream data off the TEMs based on the CryoEM logbook",
@@ -224,32 +225,35 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     # delete files large file over a certain amount of time
     ###
     # newer = 'date -d "$(date -r ' + self.newer + ') - ' + self.newer_offset + '" +"%Y-%m-%d %H:%M:%S"'
-    delete = BashOperator( task_id='delete',
-        queue=str(args['data_transfer_queue']),
-        bash_command="""
-            find {{ params.source_directory }} {{ params.file_glob }} -type f ! -newermt "`date -d "$(date -r {{ ti.xcom_pull(task_ids='last_rsync') }}) -  {{ params.age }}" +"%Y-%m-%d %H:%M:%S"`" -size {{ params.size }} -print {% if not params.dry_run %}-delete{% endif %} | grep -v "Permission denied" | true
-        """,
-        params={
-            'source_directory': args['source_directory'],
-            'file_glob': "\( -name 'FoilHole_*_Data_*.mrc' -o -name 'FoilHole_*_Data_*.dm4' -o -name '*.tif' \)",
-            'age': args['remove_files_after'],
-            'size': args['remove_files_larger_than'],
-            'dry_run': False
-        }
-    )
+#    delete = BashOperator( task_id='delete',
+#        queue=str(args['data_transfer_queue']),
+#        bash_command="""
+#            find {{ params.source_directory }} {{ params.file_glob }} -type f ! -newermt "`date -d "$(date -r {{ ti.xcom_pull(task_ids='last_rsync') }}) -  {{ params.age }}" +"%Y-%m-%d %H:%M:%S"`" -size {{ params.size }} -print {% if not params.dry_run %}-delete{% endif %} | grep -v "Permission denied" | true
+#        """,
+#        params={
+#            'source_directory': args['source_directory'],
+#            'file_glob': "\( -name 'FoilHole_*_Data_*.mrc' -o -name 'FoilHole_*_Data_*.dm4' -o -name '*.tif' \)",
+#            'age': args['remove_files_after'],
+#            'size': args['remove_files_larger_than'],
+#            'dry_run': False
+#        }
+#    )
 
     def previews_operator(**kwargs):
       dir = kwargs['ti'].xcom_pull(task_ids='sample_directory')
       filepaths = []
       for f in kwargs['ti'].xcom_pull(task_ids='rsync'):
-        these = glob.glob( f'{dir}/**/{f}', recursive=True )
-        #LOG.info(f"found: {these}")
-        filepaths = filepaths + these
+        these = [ f for f in glob.glob( f'{dir}/**/{f}', recursive=True ) if 'MetaData' not in f ]
+        LOG.info(f"found {len(these)} files")
+        LOG.info(f"found file: {these}")
+        foundpaths = set(filepaths) | set(these)
+        filepaths = list(foundpaths)
+        #filepaths = filepaths + these
       jpgs = []
       for f in filepaths:
         skip = True
-        for ex in ( '.tif', '.tiff', '.jpg', '.png' ):
-          if ex in f:
+        for ex in ( '.tif', '.tiff', '.jpg', '.jpeg', '.png' ):
+          if ex in f: #f.lower().endswith(ex):
             skip = False
         if not skip:
           jpg = '.'.join( f.split('.')[:-1] ) + '.jpg'
@@ -263,11 +267,11 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
       kwargs['ti'].xcom_push(key='return_value', value=jpgs)
       #kwargs['ti'].xcom_push(key='return_value', value=filepaths)
 
-    previews = PythonOperator( task_id='previews',
-        queue='cpu',
-        provide_context=True,
-        python_callable=previews_operator,
-    )
+#    previews = PythonOperator( task_id='previews',
+#        queue='cpu',
+#        provide_context=True,
+#        python_callable=previews_operator,
+#    )
 
 
 
@@ -301,18 +305,34 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
         token=Variable.get('slack_token'),
         users="{{ ti.xcom_pull( task_ids='config', key='collaborators' ) }}",
         usermap_file='/usr/local/airflow/dags/slack_users.yaml',
-        default_users="W018287MVEK,W8WBPL02K,W9RUM1ET1",
+        default_users="U0418J4N6LC,W8WBPL02K,W9RUM1ET1",
     )
-    slack_previews = SlackAPIMultiUploadFileOperator( task_id='slack_previews',
-        channel="{{ ti.xcom_pull( task_ids='config', key='experiment' )[:21] | replace( ' ', '' ) | lower }}",
-        token=Variable.get('slack_' + os.path.splitext(os.path.basename(__file__))[0].split('_')[0].lower() ),
-        xcom="previews",
+#    slack_previews = SlackAPIMultiUploadFileOperator( task_id='slack_previews',
+#        channel="{{ ti.xcom_pull( task_ids='config', key='experiment' )[:21] | replace( ' ', '' ) | lower }}",
+#        token=Variable.get('slack_' + os.path.splitext(os.path.basename(__file__))[0].split('_')[0].lower() ),
+#        xcom="previews",
+#    )
+
+    ###
+    # clear out zombie processes after transferring files
+    ###
+    kill_zombies = BashOperator(task_id='kill_zombies',
+        queue=str(args['data_transfer_queue']),
+        bash_command = """
+        ZOMBIE_THRESHOLD=500
+        ZOMBIE_COUNT=`ps auxw | grep "defunct" | wc -l`
+        if [ $ZOMBIE_COUNT -gt $ZOMBIE_THRESHOLD ]; then
+            echo "Zombie count exceeds $ZOMBIE_THRESHOLD, killing running container..."
+            kill -INT 1
+        fi
+        """
     )
+  
 
     ###
     # define pipeline
     ###
-    config >> sample_directory >> touch >> rsync >> delete >> untouch
+    config >> sample_directory >> touch >> rsync >> untouch >> kill_zombies
     sample_directory >> sample_symlink
     config >> last_rsync >> rsync # >> trigger
     sample_directory >> setfacl
@@ -320,6 +340,6 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     
     #rsync >> runs
     config >> slack_channel >> slack_users
-    slack_channel >> previews
-    rsync >> previews
-    previews >> slack_previews
+    #slack_channel >> previews
+    #rsync >> previews
+    #previews >> slack_previews

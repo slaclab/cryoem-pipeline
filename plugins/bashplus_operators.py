@@ -91,8 +91,16 @@ class BashPlusOperator(BashOperator):
                             context['task_instance'].xcom_push( key=k, value=d )
                     except:
                         self.log.error('Error parsing "%s" output in file %s' % (k,v))
-            self.log.info('Command exited with return code %s', self.sub_process.returncode)
-            if self.sub_process.returncode != 0:
+            self.log.info('Command with pid %s exited with return code %s', self.sub_process.pid, self.sub_process.returncode)
+            rc = self.sub_process.returncode
+
+            if rc != 0:
+                if self.sub_process and hasattr(self.sub_process, "pid"):
+                    self.log.info(f"Sending SIGKILL signal to subprocess {self.sub_process.pid}")
+                    self.sub_process.kill()
+                    self.log.info(f"Sending SIGTERM signal to subprocess {self.sub_process.pid}")
+                    self.sub_process.terminate()
+                    del self.sub_process
                 raise AirflowException('Bash command failed. The command returned a non-zero exit code.')
 
         self.end_time = datetime.now()
@@ -102,6 +110,12 @@ class BashPlusOperator(BashOperator):
             'duration': (self.end_time - self.start_time).total_seconds(),
             'host': os.uname().nodename,
         }
+
+    def send_sigterm(self,pgid):
+        """Send SIGTERM signal to ``self.sub_process`` if one exists."""
+        if self.sub_process and hasattr(self.sub_process, "pid"):
+            self.log.info(f"Sending SIGTERM signal to process group {pgid}")
+            os.killpg(pgid, signal.SIGTERM)
 
 class BashplusPlugin(AirflowPlugin):
     name = 'bashplus_plugin'

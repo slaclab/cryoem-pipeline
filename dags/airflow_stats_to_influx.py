@@ -5,7 +5,7 @@ from datetime import datetime
 from airflow.operators.postgres_operator import PostgresOperator
 from airflow.hooks.postgres_hook import PostgresHook
 
-from influx_operators import GenericInfluxOperator, InfluxOperator
+from airflow.operators import GenericInfluxOperator, InfluxOperator #, Xcom2InfluxOperator
 import influxdb
 
 import logging
@@ -36,7 +36,7 @@ class MyInfluxOperator(Xcom2InfluxOperator):
                     dag[dag_id] = {}
                 dag[dag_id][l[1]] = l[2]
 
-        client = influxdb.InfluxDBClient( self.host, self.port, self.user, self.password, self.db )
+        client = influxdb.InfluxDBClient( self.host, self.port, self.user, self.password, self.db, ssl=True, verify_ssl=False )
         client.create_database(self.measurement)
         #LOG.info("DAG: %s" % (dag,))
         for k,data in dag.items():
@@ -63,14 +63,17 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     ) as dag:
 
     dag_stats = MyPostgresOperator(task_id='dag_stats', 
+        queue='dtn',
         sql="select dag_id,state,count(*) from dag_run WHERE dag_run.dag_id IN ( select dag_id from dag where scheduler_lock is null and is_paused='f' ) GROUP BY state, dag_id ORDER BY dag_id, state;",
         database="airflow"
     )
 
     influx = MyInfluxOperator(task_id='influx',
+        queue='dtn',
         xcom_task_id='dag_stats',
         measurement='airflow_dags',
-        host='influxdb01.slac.stanford.edu',
+        host='influxdb.slac.stanford.edu',
+        port=443,
     )
 
 

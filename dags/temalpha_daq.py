@@ -15,12 +15,13 @@ from airflow.models import BaseOperator
 from airflow.operators.python_operator import PythonOperator, ShortCircuitOperator
 from airflow.operators.bash_operator import BashOperator
 
-from airflow.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.operators.dagrun_operator import TriggerDagRunOperator, DagRunOrder
+from airflow.operators.trigger_plugin import TriggerMultipleDagRunOperator
 
-from cryoem_operators import LogbookConfigurationSensor, LogbookCreateRunOperator
-from file_operators import RsyncOperator, ExtendedAclOperator, HasFilesOperator
-from slack_operators import SlackAPIEnsureChannelOperator, SlackAPIInviteToChannelOperator
-from trigger_operators import TriggerMultiDagRunOperator
+from airflow.operators.cryoem_plugin import LogbookConfigurationSensor, LogbookCreateRunOperator
+from airflow.operators.file_plugin import RsyncOperator, ExtendedAclOperator, HasFilesOperator
+
+from airflow.operators.slack_plugin import SlackAPIEnsureChannelOperator, SlackAPIInviteToChannelOperator
 
 from airflow.exceptions import AirflowException, AirflowSkipException
 
@@ -52,7 +53,7 @@ args = {
     #'destination_directory': '/gpfs/slac/cryo/fs1/exp/',
     'destination_directory': '/sdf/group/cryoem/exp',
     'logbook_connection_id': 'cryoem_logbook',
-    'remove_files_after': '72 hours',
+    'remove_files_after': '48 hours',
     'remove_files_larger_than': '+100M',
     'data_transfer_queue': 'dtn-temalpha', #'dtn-temalpha', # airflow worker queue for data transfers
     'dry_run': False,
@@ -69,7 +70,7 @@ class RsyncDiffOperator(BaseOperator):
     ui_color = '#f0ede4'
 
     @apply_defaults
-    def __init__(self, source, target, newer=None, newer_offset='15 mins', do_xcom_push=True, env=None, output_encoding='utf-8', prune_empty_dirs=False, includes='', excludes='', flatten=False, dry_run=False, redis_host='redis', redis_port='6379', redis_db=4, redis_password=None, redis_key='temalpha', *args, **kwargs ):
+    def __init__(self, source, target, newer=None, newer_offset='20 mins', xcom_push=True, env=None, output_encoding='utf-8', prune_empty_dirs=False, includes='', excludes='', flatten=False, dry_run=False, redis_host='redis', redis_port='6379', redis_db=4, redis_password=None, redis_key='temalpha', *args, **kwargs ):
         super(RsyncDiffOperator, self).__init__(*args,**kwargs)
         self.env = env
         self.output_encoding = output_encoding
@@ -83,7 +84,7 @@ class RsyncDiffOperator(BaseOperator):
         self.flatten = flatten
         self.dry_run = dry_run
 
-        self.do_xcom_push_flag = do_xcom_push
+        self.xcom_push_flag = xcom_push
 
         self.redis_host = redis_host
         self.redis_port = redis_port
@@ -93,7 +94,7 @@ class RsyncDiffOperator(BaseOperator):
 
         self.newer = newer
         self.newer_offset = newer_offset
-        logging.info("NEWER " + self.newer_offset)
+        #logging.info("NEWER " + self.newer_offset)
 
         self.rsync_command = ''
 
@@ -150,7 +151,7 @@ exit $STATUS
                         self.source,
                         # find
                         find_arg,
-                        ' -newermt "`%s`"'%(newer,) if newer else '',
+                        ' -newermt "`%s`" | head -1000'%(newer,) if newer else 'head -1000',
                         # delete empty dir
                         self.target,
                         '' if dry else ' -delete',
@@ -199,7 +200,7 @@ exit $STATUS
                 logging.info("Command exited with "
                              "return code {0}".format(sp.returncode))
 
-                if self.do_xcom_push_flag:
+                if self.xcom_push_flag:
                     return [ os.path.basename(o) for o in output ]
 
 
@@ -211,8 +212,12 @@ exit $STATUS
         self.sp.terminate()
 
 
-
-
+class HasGainRefsOperator(BaseOperator):
+    @apply_defaults
+    def __init__(self, target, glob='', timeout=5, *args, **kwargs):
+        super(HasFilesOperator, self).__init__(*args, **kwargs)
+        self.target = target
+        self.glob = glob
 
 with DAG( os.path.splitext(os.path.basename(__file__))[0],
         description="Stream data off the TEMs based on the CryoEM logbook",
@@ -244,7 +249,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     sample_directory = BashOperator( task_id='sample_directory',
         queue=str(args['data_transfer_queue']),
         bash_command = "mkdir -p %s/{{ ti.xcom_pull(task_ids='config',key='directory_suffix') }}/{{ ti.xcom_pull(task_ids='config',key='sample')['guid'] }}/raw/ && chmod o-rwx %s/{{ ti.xcom_pull(task_ids='config',key='directory_suffix') }} && echo %s/{{ ti.xcom_pull(task_ids='config',key='directory_suffix') }}/{{ ti.xcom_pull(task_ids='config',key='sample')['guid'] }}/raw/" % (args['destination_directory'],args['destination_directory'],args['destination_directory']),
-        do_xcom_push=True
+        xcom_push=True
     )
     
     sample_symlink = BashOperator( task_id='sample_symlink',
@@ -278,7 +283,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
             'directory': args['destination_directory'] + '/.daq/',
             'prefix': args['tem'] + '_sync_'
         },
-        do_xcom_push=True,
+        xcom_push=True,
     )
 
     ###
@@ -312,7 +317,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
         priority_weight=50,
         parallel=5,
         newer="{{ ti.xcom_pull(task_ids='last_rsync') }}",
-        newer_offset='15 mins'
+        newer_offset='30 mins'
     )
 
     file_diff = RsyncDiffOperator( task_id='file_diff',
@@ -325,10 +330,12 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
         flatten=False,
         priority_weight=50,
         newer="{{ ti.xcom_pull(task_ids='last_rsync') }}",
-        newer_offset='15 mins',
+        newer_offset='30 mins',
         redis_password=Variable.get('redis_password'),
         redis_key=args['tem'].lower(),
     )
+
+        
 
     has_gain_refs = HasFilesOperator( task_id='has_gain_refs',
         queue=str(args['data_transfer_queue']),
@@ -391,7 +398,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
 
             # wait until dag is registered
             echo unpause...
-            while [ `airflow dags unpause ${DAG} | grep \", paused: False\" | wc -l` -eq 0 ]; do
+            while [ `airflow unpause ${DAG} | grep \", paused: False\" | wc -l` -eq 0 ]; do
                 echo waiting...
                 sleep 60
             done
@@ -408,7 +415,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     ###
     # trigger another daq to handle the rest of the pipeline
     ###
-    trigger = TriggerMultiDagRunOperator( task_id='trigger',
+    trigger = TriggerMultipleDagRunOperator( task_id='trigger',
         queue=str(args['data_transfer_queue']),
         trigger_dag_id="{{ ti.xcom_pull( task_ids='config', key='experiment' ) }}_{{ ti.xcom_pull( task_ids='config', key='sample' )['guid'] }}",
         dry_run=str(args['dry_run']),
@@ -437,13 +444,28 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
         token=Variable.get('slack_token'),
         users="{{ ti.xcom_pull( task_ids='config', key='collaborators' ) }}",
         usermap_file='/usr/local/airflow/dags/slack_users.yaml',
-        default_users="WMLGZAGVD,W016J913JF7,W8UP7EHED,W9RUM1ET1"
+        default_users="W016J913JF7,W8WBPL02K,W9RUM1ET1,U03K7TYAMKM,W01AN7SMBR9"
     )
 
     ###
+    # clear out zombie processes after transferring files
+    ###
+    kill_zombies = BashOperator(task_id='kill_zombies',
+        queue=str(args['data_transfer_queue']),
+        bash_command = """
+        ZOMBIE_THRESHOLD=500
+        ZOMBIE_COUNT=`ps auxw | grep "defunct" | wc -l`
+        if [ $ZOMBIE_COUNT -gt $ZOMBIE_THRESHOLD ]; then
+            echo "Zombie count exceeds $ZOMBIE_THRESHOLD, killing running container..."
+            kill -INT 1
+        fi
+        """
+    )
+   
+    ###
     # define pipeline
     ###
-    config >> sample_directory >> touch >> rsync >> delete >> untouch
+    config >> sample_directory >> touch >> rsync >> delete >> untouch >> kill_zombies
     touch >> file_diff
     sample_directory >> sample_symlink
     config >> last_rsync >> rsync >> trigger

@@ -42,10 +42,10 @@ class StuckTasksSensor(PostgresOperator):
     """
     @apply_defaults
     def __init__(
-            self, task_id, database, experiments_from_xcom, pickle_file,
-            sql=None, postgres_conn_id='postgres_default', autocommit=False, parameters=None, **kwargs):
-        super(PostgresOperator, self).__init__( task_id=task_id, **kwargs ) #database=database, sql=sql, *args, **kwargs )
-        self.task_id = task_id
+            self, database, experiments_from_xcom, pickle_file,
+            sql=None, postgres_conn_id='postgres_default', autocommit=False, parameters=None,
+            *args, **kwargs):
+        super(PostgresOperator, self).__init__( database=database, sql=sql, *args, **kwargs )
         self.exps = experiments_from_xcom
         self.sql = sql
         self.pickle_file = pickle_file
@@ -227,32 +227,36 @@ class FailedTasksSensor(PostgresOperator):
             for run_id, e in d.items():
                 at = str(e['at']).replace(' ','T')
                 # no data!
-                if len( list(set(['stack_file','gainref_file']) & set(e['tasks'])) ):
+                if len( list(set(['stack_file']) & set(e['tasks'])) ):
                     LOG.error("%s / %s skipping unrecoverable error (no raw data): %s" % (exp,run_id,e['tasks'],))
                     #retry.append( 'airflow clear -c %s -s %s -e %s  -t stack_file --downstream   # %s' % (exp, at, at, run_id ) )
+                elif len( list(set(['summed_file']) & set(e['tasks'])) ):
+                    LOG.error("%s / %s skipping unrecoverable error (no summed data): %s" % (exp,run_id,e['tasks'],))
+                elif len( list(set(['gainref_file']) & set(e['tasks'])) ):
+                    LOG.error("%s / %s skipping unrecoverable error (no gainref data): %s" % (exp,run_id,e['tasks'],))
+                elif len( list(set(['param_file']) & set(e['tasks'])) ):
+                    LOG.error("%s / %s skipping unrecoverable error (no param data): %s" % (exp,run_id,e['tasks'],))
                 # need to redo motion correction
-                elif len( list(set(['align','aligned_file','new_gainref_file','convert_aligned_ctf_preview']) & set(e['tasks'])) ):
+                elif len( list(set(['align']) & set(e['tasks'])) ):
                     LOG.info("%s / %s alignment failed - resubmit: %s" % (exp,run_id,e['tasks'],))
-                    retry.append( 'airflow clear -c %s -s %s -e %s  -t convert_gainref --downstream   # %s' % (exp, at, at, run_id ) )
+                    retry.append( 'airflow clear -c %s -s %s -e %s  -t align --downstream   # %s' % (exp, at, at, run_id ) )
                 # need to redo sum ctf
-                elif len( list(set(['sum','summed_file','summed_preview']) & set(e['tasks'])) ):
+                elif len( list(set(['sum']) & set(e['tasks'])) ):
                     LOG.info("%s / %s sum failed - resubmit: %s" % (exp,run_id,e['tasks'],))
                     retry.append( 'airflow clear -c %s -s %s -e %s  -t sum --downstream   # %s' % (exp, at, at, run_id ) )
                 # particle picking
                 elif len( list(set(['particle_pick']) & set(e['tasks'])) ):
                     LOG.info("%s / %s particle picking failed - resubmit: %s" % (exp,run_id,e['tasks'],))
                     retry.append( 'airflow clear -c %s -s %s -e %s  -t particle_pick --downstream   # %s' % (exp, at, at, run_id ) )
-                # dunno...
-                #elif len( list(set(['particle_pick_preview']) & set(e['tasks'])) ):
-                #    LOG.error("%s / %s skipping unrecoverable error (particle picking failed): %s" % (exp,run_id,e['tasks'],))
-                # just needs a kick, so initiate a null task
-                elif len( list(set(['resubmit_stack']) & set(e['tasks'])) ):
-                    LOG.info("%s / %s stalled: %s" % (exp,run_id,e['tasks'],))
-                    # use a nulloperator task to start the dag again
-                    retry.append( 'airflow clear -c %s -s %s -e %s  -t invite_slack_users   # %s' % (exp, at, at, run_id ) )
-                elif len( list(set(['convert_summed_ctf_preview','ctf_summed']) & set(e['tasks'])) ):
-                    LOG.info("%s / %s summed failed - resubmit: %s" % (exp,run_id,e['tasks'],))
-                    retry.append( 'airflow clear -c %s -s %s -e %s  -t ctffind_summed --downstream   # %s' % (exp, at, at, run_id ) )
+                elif len( list(set(['previews']) & set(e['tasks'])) ):
+                    LOG.info("%s / %s previews failed - resubmit: %s" % (exp,run_id,e['tasks'],))
+                    retry.append( 'airflow clear -c %s -s %s -e %s  -t previews --downstream   # %s' % (exp, at, at, run_id ) )
+                elif len( list(set(['slack_preview']) & set(e['tasks'])) ):
+                    LOG.info("%s / %s slack preview failed - resubmit: %s" % (exp,run_id,e['tasks'],))
+                    retry.append( 'airflow clear -c %s -s %s -e %s  -t slack_preview --downstream   # %s' % (exp, at, at, run_id ) )
+                # tomography
+                elif len( list(set(['create']) & set(e['tasks'])) ):
+                    LOG.info("%s / %s skipping tomo create" % (exp,run_id))
                 # singular tasks
                 else:
                     LOG.info("%s / %s unknown: %s" % (exp,run_id,e['tasks'],))
@@ -272,19 +276,23 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     ) as dag:
 
     experiments = MyPostgresQuerySensor(task_id='experiments',
+        queue='dtn',
         database="airflow",
         sql="""
         select dag_id from dag where is_paused='f' and dag_id NOT LIKE 'tem%';
         """
     )
     stuck = StuckTasksSensor(task_id='stuck',
+        queue='dtn',
         database="airflow",
         experiments_from_xcom='experiments',
-        pickle_file='/gpfs/slac/cryo/fs1/exp/.daq/experiment_cleanup-paused.pickle',
+        pickle_file='/sdf/group/cryoem/exp/.daq/experiment_cleanup-paused.pickle',
+        #pickle_file='/gpfs/slac/cryo/fs1/exp/.daq/experiment_cleanup-paused.pickle',
     )
     experiments >> stuck
 
     unstick = SkippableBashOperator( task_id='unstick',
+        queue='dtn',
         bash_command="""
           {%- for l in ti.xcom_pull(task_ids='stuck') %}
             {{ l }}
@@ -294,12 +302,14 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     stuck >> unstick
     
     failed = FailedTasksSensor( task_id='failed',
+        queue='dtn',
         database="airflow",
         experiments_from_xcom='experiments',
     )
     experiments >> failed
     
     unfail = SkippableBashOperator( task_id='unfail',
+        queue='dtn',
         bash_command="""
           {%- for l in ti.xcom_pull(task_ids='failed') -%}
             {{ l }}

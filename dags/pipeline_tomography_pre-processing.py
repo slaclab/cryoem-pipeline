@@ -6,17 +6,16 @@ from airflow.hooks.http_hook import HttpHook
 
 from airflow.operators.dummy_operator import DummyOperator
 from airflow.operators.python_operator import PythonOperator, BranchPythonOperator
+from airflow.operators.file_plugin import FileGlobSensor, FileInfoSensor
 from airflow.operators.bash_operator import BashOperator
+from airflow.operators.bashplus_plugin import BashPlusOperator
 from airflow.operators.slack_operator import SlackAPIPostOperator
-
-from bashplus_operators import BashPlusOperator
-from file_operators import FileGlobSensor, FileInfoSensor
-from slack_operators import SlackAPIUploadFileOperator
-from ctffind4_operators import Ctffind4DataSensor
-from motioncor2_operators import MotionCor2DataSensor
-from fei_epu_operators import FeiEpuOperator
-from influx_operators import FeiEpu2InfluxOperator, GenericInfluxOperator, PipelineInfluxOperator, PipelineStatsOperator, PipelineCtfOperator
-from cryoem_operators import LogbookConfigurationSensor, LogbookRegisterFileOperator, LogbookRegisterRunParamsOperator, LogbookCreateRunOperator, PipelineRegisterRunOperator, PipelineRegisterFilesOperator
+from airflow.operators.slack_plugin import SlackAPIUploadFileOperator
+from airflow.operators.ctffind4_plugin import Ctffind4DataSensor
+from airflow.operators.motioncor2_plugin import MotionCor2DataSensor
+from airflow.operators.fei_epu_plugin import FeiEpuOperator
+from airflow.operators.influx_plugin import FeiEpu2InfluxOperator, GenericInfluxOperator, PipelineInfluxOperator, PipelineStatsOperator, PipelineCtfOperator
+from airflow.operators.cryoem_plugin import LogbookConfigurationSensor, LogbookRegisterFileOperator, LogbookRegisterRunParamsOperator, LogbookCreateRunOperator, PipelineRegisterRunOperator, PipelineRegisterFilesOperator
 
 from airflow.exceptions import AirflowSkipException
 
@@ -37,9 +36,11 @@ args = {
 
     'pipeline_script': '/usr/local/airflow/pipeline-tomo.sh',
     #'pipeline_script': '/gpfs/slac/cryo/fs1/daq/prod/airflow/pipeline-tomo.sh',
-    'directory_prefix': '/gpfs/slac/cryo/fs1/exp',
+    'directory_prefix': '/sdf/group/cryoem/exp',
+    #'directory_prefix': '/gpfs/slac/cryo/fs1/exp',
 
     'apply_gainref':     True, 
+    'apply_defect_file':  False,
     'daq_software':      'SerialEM',
     'max_active_runs':   50,
     # 'particle_size':     150,
@@ -71,7 +72,8 @@ from airflow.operators.python_operator import PythonOperator, ShortCircuitOperat
 def preTomogram(**kwargs):
     #mdoc = kwargs['ti'].xcom_pull( task_ids='mdoc_file' ).pop()
     log_file = kwargs['log_file']
-    LOG.info(f"LOG FILE: {log_file}")
+    basename = '.'.join( os.path.basename(log_file).split('.')[:-1] ) + '.mrc'
+    LOG.info(f"LOG FILE: {log_file}: {basename}")
     # check contents
     completed = False
     collected_stacks = []
@@ -82,7 +84,10 @@ def preTomogram(**kwargs):
                 fp = l.split(' ').pop().split('\\').pop().strip()
                 #LOG.info(f'    GOT {fp}')
                 collected_stacks.append( fp )
-            if l.startswith( 'Focus area changed from stored position for item' ):
+            if l.startswith( 'Total dose in electrons' ):
+            #if l.startswith( 'Focus area changed from stored position for item' ):
+                completed = True
+            if not l.startswith('Opened new file') and basename in l:
                 completed = True
     # make sure this run is the last tilt
     this_stack = kwargs['ti'].xcom_pull( task_ids='stack_file' ).pop()
@@ -152,6 +157,7 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
             },
             recursive=True,
             poke_interval=1,
+            retries=2,
         )
         parse_parameters = FeiEpuOperator(task_id='parse_parameters',
             filepath="{{ ti.xcom_pull( task_ids='parameter_file' )[0] }}",
@@ -214,7 +220,7 @@ FORCE=1 NO_PREAMBLE=1 APIX={{ apix }} FMDOSE={{ fmdose }} SUPERRES={{ superres }
     if parameters['apply_gainref']:
         gainref_file = FileGlobSensor( task_id='gainref_file',
             #filepath="{% set superres = params.superres %}{% if superres == None and 'superres' in dag_run.conf %}{% set superres = dag_run.conf['superres'] in ( '1', 1, 'y' ) %}{% endif %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/GainRefs/*x1.m{% if superres %}1{% else %}2{% endif %}*.dm4",
-            filepath="{% set m_file = 'm1' %}{% if dag_run.conf['microscope'] in ( 'TEM2', 'TEM3' ) %}{% set m_file = 'm3' %}{% endif %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/GainRefs/*x1.{{ m_file }}*.dm4",
+            filepath="{% set m_file = 'm1' %}{% if dag_run.conf['microscope'] in ( 'blah', ) %}{% set m_file = 'm3' %}{% endif %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/GainRefs/*x1.{{ m_file }}*.dm4",
             params={
                 'daq_software': args['daq_software'],
                 'superres': args['superres'] if 'superres' in args else None,
@@ -225,15 +231,28 @@ FORCE=1 NO_PREAMBLE=1 APIX={{ apix }} FMDOSE={{ fmdose }} SUPERRES={{ superres }
         )
 
     mdoc_file = FileGlobSensor( task_id='mdoc_file',
-        filepath="{% set imaging_format = params.imaging_format if params.imaging_format else dag_run.conf['imaging_format'] %}{%- set basename = '_'.join( dag_run.conf['base'].split('_')[:-1] ) %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/**/{{ basename }}{% if imaging_format == '.mrc' %}.mrc{% else %}.st{% endif %}.mdoc",
+        filepath="{% set imaging_format = params.imaging_format if params.imaging_format else dag_run.conf['imaging_format'] %}{%- set basename = '_'.join( dag_run.conf['base'].split('_')[:-1]) %}{% if basename[-3] == '_' and basename[-2:].isnumeric() %}{% set basename = '_'.join( dag_run.conf['base'].split('_')[:-2]) %}{% endif %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/**/{{ basename }}{% if imaging_format == '.mrc' %}.mrc{% else %}.*{% endif %}.mdoc",
         params={
             'daq_software': args['daq_software'],
             'directory_prefix': args['directory_prefix'],
             'imaging_format': args['imaging_format'] if 'imaging_format' in args  else None,
         },
         recursive=True,
+        retries=2,
         poke_interval=1,
     )
+
+    if args.get('apply_defect_file'):
+      defect_file = FileGlobSensor( task_id='defect_file',
+          filepath="{%- set basename = '_'.join( dag_run.conf['base'].split('_')[:-1]) %}{% if basename[-3] == '_' and basename[-2:].isnumeric() %}{% set basename = '_'.join( dag_run.conf['base'].split('_')[:-2]) %}{% endif %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/**/defects_*.txt",
+          params={
+             'daq_software': args['daq_software'],
+              'directory_prefix': args['directory_prefix'],
+              'imaging_format': args['imaging_format'] if 'imaging_format' in args  else None,
+          },
+          recursive=True,
+          poke_interval=1,
+      )
     
     ###
     # align the frame
@@ -280,7 +299,7 @@ eval "flock -x $HANDLE"
 echo "using gpu $GPU..."
 nvidia-smi pmon -c 1
 
-FORCE=1 NO_FORCE_GAINREF=1 APIX={{ apix }} FMDOSE={{ fmdose }} PATCH='{{ patch }}' SUPERRES={{ superres }} KV={{ kev }} CS={{ cs }} PHASE_PLATE={{ phase_plate }}   \
+FORCE=1 NO_FORCE_GAINREF=1 APIX={{ apix }} FMDOSE={{ fmdose }} PATCH='{{ patch }}' SUPERRES={{ superres }} KV={{ kev }} CS={{ cs }} PHASE_PLATE={{ phase_plate }} DEFECT='{{ ti.xcom_pull( task_ids='defect_file' )[0] | replace( cwd, "." ) }}'   \
 GPU=$GPU \
 {{ params.pipeline_script }} -m tomo -t align \
   {% if params.apply_gainref %}--gainref '{{ ti.xcom_pull( task_ids='gainref_file' )[0] | replace( cwd, "." ) }}'{% endif %} \
@@ -347,12 +366,34 @@ PROCESSED_ALIGN_RESOLUTION={{ align_ctf['resolution'] }} PROCESSED_ALIGN_RESOLUT
         params=parameters,
     )
 
-    slack_preview = SlackAPIUploadFileOperator( task_id='slack_preview',
-        channel="{{ dag_run.conf['experiment'][:21] | replace( ' ', '' ) | lower }}",
-        token=Variable.get('slack_token'),
-        filepath="%s/{{ dag_run.conf['data_directory'] }}/{{ ti.xcom_pull( task_ids='previews', key='data' )['tomographic_analysis'][0]['files'][0]['path'] }}" % (args['directory_prefix'],),
-    )
+#    slack_preview = SlackAPIUploadFileOperator( task_id='slack_preview',
+#        channel="{{ dag_run.conf['experiment'] | replace( ' ', '' ) | lower }}",
+#        token=Variable.get('slack_token'),
+#        filepath="%s/{{ dag_run.conf['data_directory'] }}/{{ ti.xcom_pull( task_ids='previews', key='data' )['tomographic_analysis'][0]['files'][0]['path'] }}" % (args['directory_prefix'],),
+#    )
+ 
+    slack_preview = BashPlusOperator( task_id='slack_preview',
+        queue='cpu',
+    	bash_command="""
+{% set cwd = params.directory_prefix + '/' + dag_run.conf['data_directory'].replace('//','/',10) -%}
+#OUT {{ cwd }}/logs/{{ dag_run.conf['base'] }}-slack_preview.job
+export TOKEN="{{ params.token }}"
+export FILEPATH="{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/{{ ti.xcom_pull( task_ids='previews', key='data' )['tomographic_analysis'][0]['files'][0]['path'] }}"
+export CHANNEL="{{ dag_run.conf['experiment'] | replace( ' ', '' ) | lower }}"
+if [ -f "${FILEPATH}" ]; then
+    echo "Uploading preview image ${FILEPATH} to channel ${CHANNEL}"
+    {{ params.directory_prefix }}/slack_preview_upload.sh -t ${TOKEN} -f ${FILEPATH} -c ${CHANNEL}
+else
+    echo "Error: Preview image ${FILEPATH} not found."
+fi	
 
+""",
+        params={
+            'directory_prefix': args['directory_prefix'],
+            'token': Variable.get('slack_' + os.path.splitext(os.path.basename(__file__))[0].split('_')[1].lower() ),
+        }
+    )
+  
     logbook_run = PipelineRegisterRunOperator( task_id='logbook_run',
         http_hook=logbook_hook,
         experiment="{{ dag_run.conf['experiment'].split('_')[0] }}",
@@ -419,7 +460,7 @@ PROCESSED_ALIGN_RESOLUTION={{ align_ctf['resolution'] }} PROCESSED_ALIGN_RESOLUT
 
     # create tomogram
     check = PreTomogramOperator( task_id='check',
-        log_file = "{% set imaging_format = params.imaging_format if params.imaging_format else dag_run.conf['imaging_format'] %}{% set ext = imaging_format + '.mdoc' %}{{ ti.xcom_pull( task_ids='mdoc_file' ).pop().replace( ext, '.log' ) }}",
+        log_file = "{% set imaging_format = params.imaging_format if params.imaging_format else dag_run.conf['imaging_format'] %}{% if imaging_format == '.tif' %}{% set imaging_format = '.mrc' %}{% endif %}{% set ext = imaging_format + '.mdoc' %}{{ ti.xcom_pull( task_ids='mdoc_file' ).pop().replace( ext, '.log' ) }}",
         params={
             'imaging_format': args['imaging_format'] if 'imaging_format' in args  else None,
         }
@@ -486,6 +527,9 @@ FORCE=1 NO_PREAMBLE=1 NO_FORCE_GAINREF=1 APIX={{ apix }} FMDOSE={{ fmdose }} PAT
     stack_file >> sum
     stack_file >> align
     mdoc_file >> align
+    if args.get('apply_defect_file'):
+      defect_file >> align
+    mdoc_file >> sum
 
     if args['daq_software'] == 'EPU':
         parameter_file >> parse_parameters >> logbook_parameters

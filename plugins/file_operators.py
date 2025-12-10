@@ -1,6 +1,6 @@
 from airflow.plugins_manager import AirflowPlugin
 from airflow.utils.decorators import apply_defaults
-from airflow.sensors.base import BaseSensorOperator
+from airflow.operators.sensors import BaseSensorOperator
 
 from airflow.operators.python_operator import ShortCircuitOperator
 
@@ -207,6 +207,7 @@ class RsyncOperator(BaseOperator):
         
         self.newer = newer
         self.newer_offset = newer_offset
+        #logging.info("NEWER " + self.newer_offset )
         
         self.rsync_command = ''
         
@@ -245,7 +246,7 @@ STATUS=255
   ( find '%s/$RECYCLE.BIN/' -type f -delete 2>&1 >/dev/null || true ) \
 )
 if [ $? -eq 0 ]; then
-  rsync -a --chmod=o-rwx --exclude='$RECYCLE.BIN'  --exclude='System Volume Information' -f'+ */' -f'- *' %s %s %s && \
+  rsync -a --chmod=o-rwx --exclude='$RECYCLE.BIN'  --exclude='System Volume Information' --exclude='WindowsImageBackup' -f'+ */' -f'- *' %s %s %s && \
   cd %s && \
   find . -type f \( %s \) %s 2>&1 | grep -v ': Permission denied' | SHELL=/bin/sh parallel --gnu --linebuffer --jobs=%s 'rsync -av %s%s%s {} %s/{//}/'
   STATUS=$?
@@ -284,15 +285,15 @@ exit $STATUS
                 logging.info("Temporary script "
                              "location :{0}".format(script_location))
                 logging.info("Running rsync command: " + rsync_command)
-                sp = Popen(
+                self.sp = Popen(
                     ['bash', fname],
                     stdout=PIPE, stderr=STDOUT,
                     cwd=tmp_dir, env=self.env)
 
-                self.sp = sp
+                #self.sp = sp
 
                 logging.info("Output:")
-                for line in iter(sp.stdout.readline, b''):
+                for line in iter(self.sp.stdout.readline, b''):
                     line = line.decode(self.output_encoding).strip()
                     # parse for file names here
                     if line.startswith( 'building file list' ) \
@@ -309,14 +310,20 @@ exit $STATUS
                     else:
                         LOG.info(line)
                         output.append( line )
-                sp.wait()
+                self.sp.wait()
                 logging.info("Command exited with "
-                             "return code {0}".format(sp.returncode))
+                             "return code {0}".format(self.sp.returncode))
 
                 if self.xcom_push_flag:
                     return output
 
-                if not sp.returncode == 0:
+                if not self.sp.returncode == 0:
+                    if self.sp and hasattr(self.sp, "pid"):
+                        self.log.info(f"Sending SIGKILL signal to subprocess {self.sp.pid}")
+                        self.sp.kill()
+                        self.log.info(f"Sending SIGTERM signal to subprocess {self.sp.pid}")
+                        self.sp.terminate()
+                        del self.sp
                     raise AirflowException("rsync command failed")
 
         
@@ -332,7 +339,7 @@ class RsyncDiffOperator(BaseOperator):
     ui_color = '#f0ede4'
 
     @apply_defaults
-    def __init__(self, source, target, newer=None, newer_offset='10 mins', xcom_push=True, env=None, output_encoding='utf-8', prune_empty_dirs=False, includes='', excludes='', flatten=False, dry_run=False, redis_host='redis', redis_port='6379', redis_db=4, redis_password=None, redis_key='temalpha', *args, **kwargs ):
+    def __init__(self, source, target, newer=None, newer_offset='15 mins', xcom_push=True, env=None, output_encoding='utf-8', prune_empty_dirs=False, includes='', excludes='', flatten=False, dry_run=False, redis_host='redis', redis_port='6379', redis_db=4, redis_password=None, redis_key='temalpha', *args, **kwargs ):
         super(RsyncDiffOperator, self).__init__(*args,**kwargs)
         self.env = env
         self.output_encoding = output_encoding
@@ -551,7 +558,8 @@ class ExtendedAclOperator(BaseOperator):
 class HasFilesOperator( BaseOperator ):
     template_fields = ('target',)
     @apply_defaults
-    def __init__(self, target, glob='*.dm4', timeout=5, *args, **kwargs):
+    #def __init__(self, target, glob='*.dm4', timeout=5, *args, **kwargs):
+    def __init__(self, target, glob='*.(dm4|gain)', timeout=5, *args, **kwargs):
         super( HasFilesOperator, self ).__init__(*args, **kwargs)
         self.target = target
         self.glob = glob

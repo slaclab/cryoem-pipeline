@@ -6,17 +6,16 @@ from airflow.hooks.http_hook import HttpHook
 
 from airflow.operators.dummy_operator import DummyOperator
 from airflow.operators.python_operator import PythonOperator, BranchPythonOperator
+from airflow.operators.file_plugin import FileGlobSensor, FileInfoSensor
 from airflow.operators.bash_operator import BashOperator
+from airflow.operators.bashplus_plugin import BashPlusOperator
 from airflow.operators.slack_operator import SlackAPIPostOperator
-
-from bashplus_operators import BashPlusOperator
-from file_operators import FileGlobSensor, FileInfoSensor
-from slack_operators import SlackAPIUploadFileOperator
-from ctffind4_operators import Ctffind4DataSensor
-from motioncor2_operators import MotionCor2DataSensor
-from fei_epu_operators import FeiEpuOperator
-from influx_operators import FeiEpu2InfluxOperator, GenericInfluxOperator, PipelineInfluxOperator, PipelineStatsOperator, PipelineCtfOperator
-from cryoem_operators import LogbookConfigurationSensor, LogbookRegisterFileOperator, LogbookRegisterRunParamsOperator, LogbookCreateRunOperator, PipelineRegisterRunOperator, PipelineRegisterFilesOperator
+from airflow.operators.slack_plugin import SlackAPIUploadFileOperator
+from airflow.operators.ctffind4_plugin import Ctffind4DataSensor
+from airflow.operators.motioncor2_plugin import MotionCor2DataSensor
+from airflow.operators.fei_epu_plugin import FeiEpuOperator
+from airflow.operators.influx_plugin import FeiEpu2InfluxOperator, GenericInfluxOperator, PipelineInfluxOperator, PipelineStatsOperator, PipelineCtfOperator
+from airflow.operators.cryoem_plugin import LogbookConfigurationSensor, LogbookRegisterFileOperator, LogbookRegisterRunParamsOperator, LogbookCreateRunOperator, PipelineRegisterRunOperator, PipelineRegisterFilesOperator
 
 from airflow.exceptions import AirflowSkipException
 
@@ -27,6 +26,8 @@ import json
 import logging
 LOG = logging.getLogger(__name__)
 
+MICROSCOPE = os.path.splitext(os.path.basename(__file__))[0].split('_')[1]
+
 args = {
     'owner': 'cryo-daq',
     'provide_context': True,
@@ -36,11 +37,12 @@ args = {
     'influx_host':              'influxdb.slac.stanford.edu',
 
     'pipeline_script': '/usr/local/airflow/pipeline.sh',
-    'directory_prefix': '/gpfs/slac/cryo/fs1/exp',
+    #'directory_prefix': '/sdf/group/cryoem/exp' if MICROSCOPE in ( 'TEM1', 'TEM2', 'TEM3', 'TEM4', 'TEMALPHA', 'TEMBETA', 'TEMGAMMA' ) else '/gpfs/slac/cryo/fs1/exp',
+    'directory_prefix': '/sdf/group/cryoem/exp', 
 
-    'apply_gainref':     True, 
+    'apply_gainref':     False if MICROSCOPE in ( 'TEM3', 'TEM4', 'TEMALPHA', 'TEMGAMMA' ) else True, 
     'daq_software':      '__imaging_software__',
-    'max_active_runs':   75,
+    'max_active_runs':   30,
     # 'particle_size':     150,
     # 'create_run':         False
     # 'apix':              1.35,
@@ -100,30 +102,31 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
     ###
     # parse the epu xml metadata file
     ###
-    if args['daq_software'] == 'EPU':
-        parameter_file = FileInfoSensor( task_id='parameter_file',
-            filepath="{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/**/{{ dag_run.conf['base'] }}.xml",
-            params={
-                'directory_prefix': args['directory_prefix'],
-            },
-            recursive=True,
-            poke_interval=1,
-        )
-        parse_parameters = FeiEpuOperator(task_id='parse_parameters',
-            filepath="{{ ti.xcom_pull( task_ids='parameter_file' )[0] }}",
-        )
-        # upload to the logbook
-        logbook_parameters = PythonOperator(task_id='logbook_parameters',
-            python_callable=uploadExperimentalParameters2Logbook,
-            op_kwargs={}
-        )
-        influx_parameters = FeiEpu2InfluxOperator( task_id='influx_parameters',
-            xcom_task_id='parse_parameters',
-            host=args['influx_host'],
-            port=443,
-            ssl=True,
-            experiment="{{ dag_run.conf['experiment'] }}",
-        )
+    #if args['daq_software'] == 'EPU':
+    #    parameter_file = FileInfoSensor( task_id='parameter_file',
+    #        filepath="{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/**/{{ dag_run.conf['base'] }}.xml",
+    #        params={
+    #            'directory_prefix': args['directory_prefix'],
+    #        },
+    #        recursive=True,
+    #        poke_interval=1,
+    #        retries=1,
+    #    )
+    #    parse_parameters = FeiEpuOperator(task_id='parse_parameters',
+    #        filepath="{{ ti.xcom_pull( task_ids='parameter_file' )[0] }}",
+    #    )
+    #    # upload to the logbook
+    #    logbook_parameters = PythonOperator(task_id='logbook_parameters',
+    #        python_callable=uploadExperimentalParameters2Logbook,
+    #        op_kwargs={}
+    #    )
+    #    influx_parameters = FeiEpu2InfluxOperator( task_id='influx_parameters',
+    #        xcom_task_id='parse_parameters',
+    #        host=args['influx_host'],
+    #        port=443,
+    #        ssl=True,
+    #        experiment="{{ dag_run.conf['experiment'] }}",
+    #    )
 
 
     ###
@@ -144,9 +147,9 @@ with DAG( os.path.splitext(os.path.basename(__file__))[0],
 #OUT {{ cwd }}/logs/{{ dag_run.conf['base'] }}-sum.job
 cd {{ cwd }} && mkdir -p {{ cwd }}/logs/
 rm -f 'logs/{{ dag_run.conf['base'] }}-sum.yaml'
-FORCE=1 NO_PREAMBLE=1 APIX={{ apix }} FMDOSE={{ fmdose }} SUPERRES={{ superres }} KV={{ kev }} CS={{ cs }} PHASE_PLATE={{ phase_plate }} {% if params.software == 'EPU' %}SUMMED_FILE='{{ ti.xcom_pull( task_ids='summed_file' )[0] | replace( cwd, "." ) }}'{% endif %}  \
+FORCE=1 NO_FORCE_GAINREF=1 NO_PREAMBLE=1 APIX={{ apix }} FMDOSE={{ fmdose }} SUPERRES={{ superres }} KV={{ kev }} CS={{ cs }} PHASE_PLATE={{ phase_plate }} {% if params.software == 'EPU' %}SUMMED_FILE='{{ ti.xcom_pull( task_ids='summed_file' )[0] | replace( cwd, "." ) }}'{% endif %}  \
   {{ params.pipeline_script }} -t sum \
-  --gainref '{{ ti.xcom_pull( task_ids='gainref_file' )[0] | replace( cwd, "." ) }}' \
+  {% if params.apply_gainref %}--gainref '{{ ti.xcom_pull( task_ids='gainref_file' )[0] | replace( cwd, "." ) }}'{% endif %} \
   --basename '{{ dag_run.conf['base'] }}' \
   '{{ ti.xcom_pull( task_ids='stack_file' )[-1] | replace( cwd, "." ) }}' \
     > './logs/{{ dag_run.conf['base'] }}-sum.yaml' 
@@ -155,7 +158,7 @@ FORCE=1 NO_PREAMBLE=1 APIX={{ apix }} FMDOSE={{ fmdose }} SUPERRES={{ superres }
     )
 
     stack_file = FileGlobSensor( task_id='stack_file',
-        filepath="{% set imaging_format = params.imaging_format if params.imaging_format else dag_run.conf['imaging_format'] %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/**/{{ dag_run.conf['base'] }}{% if imaging_format == '.mrc' %}-*.mrc{% elif imaging_format == '.tif' %}*.tif{% if params.daq_software == 'EPU' %}f{% endif %}{% endif %}",
+        filepath="{% set imaging_format = params.imaging_format if params.imaging_format else dag_run.conf['imaging_format'] %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/**/{{ dag_run.conf['base'] }}{% if imaging_format == '.mrc' %}?*.mrc{% elif imaging_format == '.tif' %}*.tif{% if params.daq_software == 'EPU' %}f{% endif %}{% endif %}",
         params={ 
             'daq_software': args['daq_software'],
             'imaging_format': args['imaging_format'] if 'imaging_format' in args  else None,
@@ -168,18 +171,22 @@ FORCE=1 NO_PREAMBLE=1 APIX={{ apix }} FMDOSE={{ fmdose }} SUPERRES={{ superres }
     )
     
     # always give the superres imgae and let the pipeline bin it down if necessary
-    gainref_file = FileGlobSensor( task_id='gainref_file',
+    if args['apply_gainref'] == True:
+        filepath="{% set m_file = 'm1' %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/GainRefs/*x1.{{ m_file }}*.dm4"
+        if MICROSCOPE in ( 'TEMDELTA' ): 
+            filepath="{% set m_file = 'm1' %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/GainRefs/*.gain"
+        gainref_file = FileGlobSensor( task_id='gainref_file',
         #filepath="{% set superres = params.superres %}{% if superres == None and 'superres' in dag_run.conf %}{% set superres = dag_run.conf['superres'] in ( '1', 1, 'y' ) %}{% endif %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/GainRefs/*x1.m{% if superres %}1{% else %}2{% endif %}*.dm4",
-        filepath="{% set m_file = 'm1' %}{% if dag_run.conf['microscope'] in ( 'TEM2', 'TEM3' ) %}{% set m_file = 'm3' %}{% endif %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/GainRefs/*x1.{{ m_file }}*.dm4",
-        params={
+            filepath=filepath,
+            params={
             'daq_software': args['daq_software'],
             'superres': args['superres'] if 'superres' in args else None,
             'microscope': "{{ dag_run.conf['microscope'] }}",
             'directory_prefix': args['directory_prefix'],
-        },
-        recursive=True,
-        poke_interval=1,
-    )
+            },
+            recursive=True,
+            poke_interval=1,
+        )
     
     ###
     # align the frame
@@ -207,7 +214,7 @@ do
   GPU=""
   until [[ $GPU != ""  ]]
   do
-	  GPU=$(nvidia-smi pmon -c 1 | grep '-' | awk -v r=$RANDOM '{ a[n++]=$1 } END{ print a[int(r/32767*n)] }')
+	  GPU=$(nvidia-smi pmon -c 1 | grep '\-   \-' | awk -v r=$RANDOM '{ a[n++]=$1 } END{ print a[int(r/32767*n)] }')
 	  if [ "$GPU" == "" ]; then sleep $((1 + RANDOM % 10)); fi
   done
   echo "attempting to use gpu $GPU..."
@@ -271,7 +278,7 @@ exit $RC
 #DATA {{ cwd }}/logs/{{ dag_run.conf['base'] }}-pick.yaml
 cd {{ cwd }} && mkdir -p {{ cwd }}/logs/
 rm -f 'logs/{{ dag_run.conf['base'] }}-pick.yaml'
-FORCE=1 NO_PREAMBLE=1 APIX={{ apix }}   \
+FORCE=1 NO_PREAMBLE=1 NO_FORCE_GAINREF=1 APIX={{ apix }}   \
 {{ params.pipeline_script }} -t pick \
   --gainref '{{ ti.xcom_pull( task_ids='gainref_file' )[0] | replace( cwd, "." ) }}' \
   --basename '{{ dag_run.conf['base'] }}' \
@@ -299,7 +306,7 @@ cd {{ cwd }} && mkdir -p {{ cwd }}/logs/
 {%- set align = ti.xcom_pull( task_ids='align', key='data' )['single_particle_analysis'] %}
 {%- set drift = align[1]['data'] %}
 {%- set align_ctf = align[-1]['data'] %}
-FORCE=1 NO_PREAMBLE=1 APIX={{ apix }} {% if params.software == 'EPU' %}SUMMED_FILE='{{ ti.xcom_pull( task_ids='summed_file' )[0] | replace( cwd, "." ) }}'{% endif %}  \
+FORCE=1 NO_PREAMBLE=1 NO_FORCE_GAINREF=1 APIX={{ apix }} {% if params.software == 'EPU' %}SUMMED_FILE='{{ ti.xcom_pull( task_ids='summed_file' )[0] | replace( cwd, "." ) }}'{% endif %}  \
 PROCESSED_SUM_RESOLUTION={{ sum_ctf['resolution'] }} PROCESSED_SUM_RESOLUTION_PERFORMANCE={{ sum_ctf['resolution_performance'] }}  \
 PROCESSED_ALIGN_FIRST1={{ drift['first1'] }} PROCESSED_ALIGN_FIRST5={{ drift['first5'] }} PROCESSED_ALIGN_ALL={{ drift['all'] }} \
 PROCESSED_ALIGN_RESOLUTION={{ align_ctf['resolution'] }} PROCESSED_ALIGN_RESOLUTION_PERFORMANCE={{ align_ctf['resolution_performance'] }} PROCESSED_ALIGN_ASTIGMATISM={{ align_ctf['astigmatism'] }} PROCESSED_ALIGN_CROSS_CORRELATION={{ align_ctf['cross_correlation'] }}  \
@@ -314,10 +321,33 @@ PROCESSED_ALIGN_RESOLUTION={{ align_ctf['resolution'] }} PROCESSED_ALIGN_RESOLUT
         params=parameters,
     )
 
-    slack_preview = SlackAPIUploadFileOperator( task_id='slack_preview',
-        channel="{{ dag_run.conf['experiment'][:21] | replace( ' ', '' ) | lower }}",
-        token=Variable.get('slack_token'),
-        filepath="%s/{{ dag_run.conf['data_directory'] }}/{{ ti.xcom_pull( task_ids='previews', key='data' )['single_particle_analysis'][0]['files'][0]['path'] }}" % (args['directory_prefix'],),
+#    slack_preview = SlackAPIUploadFileOperator( task_id='slack_preview',
+#        channel="{{ dag_run.conf['experiment'] | replace( ' ', '' ) | lower }}",
+#        #channel="{{ dag_run.conf['experiment'][:21] | replace( ' ', '' ) | lower }}",
+#        token=Variable.get('slack_' + os.path.splitext(os.path.basename(__file__))[0].split('_')[1].lower() ),
+#        filepath="%s/{{ dag_run.conf['data_directory'] }}/{{ ti.xcom_pull( task_ids='previews', key='data' )['single_particle_analysis'][0]['files'][0]['path'] }}" % (args['directory_prefix'],),
+#    )
+  
+    slack_preview = BashPlusOperator( task_id='slack_preview',
+        queue='cpu',
+    	bash_command="""
+{% set cwd = params.directory_prefix + '/' + dag_run.conf['data_directory'].replace('//','/',10) -%}
+#OUT {{ cwd }}/logs/{{ dag_run.conf['base'] }}-slack_preview.job
+export TOKEN="{{ params.token }}"
+export FILEPATH="{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/{{ ti.xcom_pull( task_ids='previews', key='data' )['single_particle_analysis'][0]['files'][0]['path'] }}"
+export CHANNEL="{{ dag_run.conf['experiment'] | replace( ' ', '' ) | lower }}"
+if [ -f "${FILEPATH}" ]; then
+    echo "Uploading preview image ${FILEPATH} to channel ${CHANNEL}"
+    {{ params.directory_prefix }}/slack_preview_upload.sh -t ${TOKEN} -f ${FILEPATH} -c ${CHANNEL}
+else
+    echo "Error: Preview image ${FILEPATH} not found."
+fi	
+
+""",
+        params={
+            'directory_prefix': args['directory_prefix'],
+            'token': Variable.get('slack_' + os.path.splitext(os.path.basename(__file__))[0].split('_')[1].lower() ),
+        }
     )
 
     logbook_run = PipelineRegisterRunOperator( task_id='logbook_run',
@@ -422,11 +452,11 @@ echo 'clearing old value'
 
     if args['daq_software'] == 'EPU':
         summed_file = FileGlobSensor( task_id='summed_file',
-            filepath="{% if params.daq_software == 'SerialEM' %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/summed/imod/{{ params.software.imod.version }}/{{ dag_run.conf['base'] }}_avg_gainrefd.mrc{% else %}{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/**/{{ dag_run.conf['base'] }}{% set imaging_format = params.imaging_format if params.imaging_format else dag_run.conf['imaging_format'] %}{% if imaging_format == '.tif' %}.mrc{% else %}.mrc{% endif %}{% endif %}",
+            filepath="{{ params.directory_prefix }}/{{ dag_run.conf['data_directory'] }}/raw/**/{{ dag_run.conf['base'] }}.*",
             params={
-                'imaging_format': args['imaging_format'] if 'imaging_format' in args  else None,
                 'directory_prefix': args['directory_prefix'],
             },
+            extensions=[ '.mrc', '.tiff' ],
             recursive=True,
             timeout=10,
             retries=3,
@@ -435,16 +465,17 @@ echo 'clearing old value'
 
         summed_file >> sum
 
+    if args['apply_gainref'] == True:
+        gainref_file >> sum
+        gainref_file >> align
 
-    gainref_file >> sum
     stack_file >> sum
-    gainref_file >> align
     stack_file >> align
 
-    if args['daq_software'] == 'EPU':
-        parameter_file >> parse_parameters >> logbook_parameters
-        #sum  >> logbook_parameters
-        parse_parameters >> influx_parameters
+    #if args['daq_software'] == 'EPU':
+    #    parameter_file >> parse_parameters >> logbook_parameters
+    #    #sum  >> logbook_parameters
+    #    parse_parameters >> influx_parameters
 
     sum >> previews
     sum >> logbook_run

@@ -1,4 +1,4 @@
-from airflow.sensors.base import BaseSensorOperator
+from airflow.operators.sensors import BaseSensorOperator
 
 from airflow.plugins_manager import AirflowPlugin
 
