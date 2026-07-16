@@ -54,6 +54,7 @@ FMREF=${FMREF:-0}
 INITDOSE=${INITDOSE:-0}
 FLIPGAIN=${FLIPGAIN:-1}
 OUTSTAR=${OUTSTAR:-1}
+EERSAMPLING=${EERSAMPLING:-1}
 
 # PICKING
 PARTICLE_SIZE=${PARTICLE_SIZE:-150}
@@ -335,7 +336,9 @@ do_spa_align() {
   # I don't see any downstream use of this file in this script, but maybe it will break something I can't find
   # we can get rid of this if not necessary!!
   local legacy_star="${file%.log0-Patch-Full.log}.star"
-  local generated_star=$(ls -1t "$(dirname "$file")"/*.star 2>/dev/null | head -n 1 || true)
+  local micrograph_name=$(basename -- "$MICROGRAPH")
+  local micrograph_stem="${micrograph_name%.*}"
+  local generated_star=$(ls -1t "$(dirname "$file")"/"$micrograph_stem"*.star 2>/dev/null | head -n 1 || true)
   if [ -z "$generated_star" ]; then
     >&2 echo "motioncor2 star file not found in $(dirname "$file")"
     exit 4
@@ -615,12 +618,25 @@ align_stack()
   if [[ $FORCE -eq 1 || ! -e $output ]]; then
 
     local extension="${input##*.}"
+    local inopt=""
+    local eersampling_opt=""
+    if [ "$extension" == 'mrc' ]; then
+      inopt='-InMrc'
+    elif [ "$extension" == 'tiff' ]; then
+      inopt='-InTiff'
+    elif [ "$extension" == 'eer' ]; then
+      inopt='-InEer'
+      eersampling_opt="-EerSampling $EERSAMPLING"
+    else
+      >&2 echo "unsupported micrograph extension '$extension' for input $input"
+      exit 4
+    fi
     >&2 echo "aligning $extension stack $micrograph to $output, using gainref file $gainref..."
     local gpu=$(($GPU+$GPU_OFFSET))
     local logdir=$(dirname -- "$output")
     local cmd="
       MotionCor2  \
-        $(if [ "$extension" == 'mrc' ]; then echo '-InMrc'; else echo '-InTiff'; fi) '$micrograph' \
+        $inopt '$micrograph' \
         $(if [ ! '$gainref' == '' ]; then echo -Gain \'$gainref\'; fi) \
         $(if [ ! "$gainref" == '' ]; then echo '-FlipGain $FLIPGAIN'; fi) \
         -OutMrc $output \
@@ -639,6 +655,7 @@ align_stack()
         -Tol $TOL \
         -OutStack $OUTSTACK \
         -InFmMotion $INFMMOTION \
+        $eersampling_opt \
         -OutStar $OUTSTAR \
         -Gpu $gpu \
         -GpuMemUsage 0.95
