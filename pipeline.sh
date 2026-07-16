@@ -1,18 +1,24 @@
 #!/bin/bash -e
 
 # module loads for programs
-IMOD_VERSION=${IMOD_VERSION:-4.10.42}
+IMOD_VERSION=${IMOD_VERSION:-5.1.11}
 IMOD_LOAD="imod/${IMOD_VERSION}"
-EMAN2_VERSION="20190603"
-EMAN2_LOAD="eman2/${EMAN2_VERSION}"
-MOTIONCOR2_VERSION=${MOTIONCOR2_VERSION:-1.2.3}
+#IMOD_VERSION=${IMOD_VERSION:-4.10.42}
+#IMOD_LOAD="imod/${IMOD_VERSION}"
+#EMAN2_VERSION="20190603"
+#EMAN2_LOAD="eman2/${EMAN2_VERSION}"
+MOTIONCOR2_VERSION=${MOTIONCOR2_VERSION:-1.6.4}
 MOTIONCOR2_LOAD="motioncor2/${MOTIONCOR2_VERSION}"
-#MOTIONCOR2_VERSION="1.2.2"
+#MOTIONCOR2_VERSION=${MOTIONCOR2_VERSION:-1.2.3}
 #MOTIONCOR2_LOAD="motioncor2/${MOTIONCOR2_VERSION}"
-CTFFIND4_VERSION=${CTFFIND4_VERSION:-4.1.10}
-CTFFIND4_LOAD="ctffind/${CTFFIND4_VERSION}"
-RELION_VERSION=${RELION_VERSION:-3.0.4}
+CTFFIND4_VERSION=${CTFFIND4_VERSION:-4.1.14}
+CTFFIND4_LOAD="ctffind4/${CTFFIND4_VERSION}"
+#CTFFIND4_VERSION=${CTFFIND4_VERSION:-4.1.10}
+#CTFFIND4_LOAD="ctffind/${CTFFIND4_VERSION}"
+RELION_VERSION="ver5.0-stable"
 RELION_LOAD="relion/${RELION_VERSION}"
+#RELION_VERSION=${RELION_VERSION:-3.0.4}
+#RELION_LOAD="relion/${RELION_VERSION}"
 IMAGEMAGICK_VERSION=${IMAGEMAGICK_VERSION:=-6.8.9}
 IMAGEMAGICK_LOAD="imagemagick/$IMAGEMAGICK_VERSION"
 
@@ -46,6 +52,8 @@ GPU=${GPU:-0}
 GPU_OFFSET=${GPU_OFFSET:-0}
 FMREF=${FMREF:-0}
 INITDOSE=${INITDOSE:-0}
+FLIPGAIN=${FLIPGAIN:-1}
+OUTSTAR=${OUTSTAR:-1}
 
 # PICKING
 PARTICLE_SIZE=${PARTICLE_SIZE:-150}
@@ -584,12 +592,14 @@ align_stack()
     local extension="${input##*.}"
     >&2 echo "aligning $extension stack $micrograph to $output, using gainref file $gainref..."
     local gpu=$(($GPU+$GPU_OFFSET))
+    local logdir=$(dirname -- "$output")
     local cmd="
       MotionCor2  \
         $(if [ "$extension" == 'mrc' ]; then echo '-InMrc'; else echo '-InTiff'; fi) '$micrograph' \
         $(if [ ! '$gainref' == '' ]; then echo -Gain \'$gainref\'; fi) \
+        $(if [ ! "$gainref" == '' ]; then echo '-FlipGain $FLIPGAIN'; fi) \
         -OutMrc $output \
-        -LogFile ${output%.${extension}}.log \
+        -LogDir $logdir \
         -FmDose $FMDOSE \
         -kV $KV \
         -Bft $BFT \
@@ -604,6 +614,7 @@ align_stack()
         -Tol $TOL \
         -OutStack $OUTSTACK \
         -InFmMotion $INFMMOTION \
+        -OutStar $OUTSTAR \
         -Gpu $gpu \
         -GpuMemUsage 0.95
     "
@@ -1047,16 +1058,25 @@ motioncor_file()
   local input=$1
   local extension="${input##*.}"
   local basename=$(basename -- "$input")
-  # sometimes it has the extention?!
+  local stem="${basename%.${extension}}"
+  local datadir=$(dirname -- "$input")
+  # legacy MotionCor2 naming patterns where log files are next to the output file
   local datafile="${input}.log0-Patch-Full.log"
-  if [[ $basename == FoilHole_*  ]]; then
-    datafile="${input%.${extension}}.log0-Patch-Full.log"
-    if [ ! -e $datafile ]; then
-      datafile="${input%.${extension}}.mrc.log0-Patch-Full.log"
-    fi
-  elif [[ "$extension" == "mrc" && ! -e "$datafile" ]]; then
+  if [ ! -e "$datafile" ]; then
     datafile="${input%.${extension}}.log0-Patch-Full.log"
   fi
+  if [ ! -e "$datafile" ]; then
+    datafile="${input%.${extension}}.mrc.log0-Patch-Full.log"
+  fi
+
+  # MotionCor2 LogDir mode writes multiple logs; use the newest matching Patch-Full file.
+  if [ ! -e "$datafile" ]; then
+    local matches=( $(ls -1t "$datadir"/"$stem"*Patch-Full.log 2>/dev/null || true) )
+    if [ ${#matches[@]} -gt 0 ]; then
+      datafile="${matches[0]}"
+    fi
+  fi
+
   echo $datafile
 }
 
