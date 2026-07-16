@@ -331,7 +331,8 @@ do_spa_align() {
   PROCESSED_ALIGN_ALL=${align[all]}
 
   # MotionCor2 now creates a STAR file directly. Keep a copy at the legacy path
-  # expected by potential downstream tooling (?) that used create_motioncor_star naming.
+  # expected by potential downstream tooling (?) that used create_motioncor_star naming
+  # I don't see any downstream use of this file in this script, but maybe it will break something I can't find
   # we can get rid of this if not necessary!!
   local legacy_star="${file%.log0-Patch-Full.log}.star"
   local generated_star=$(ls -1t "$(dirname "$file")"/*.star 2>/dev/null | head -n 1 || true)
@@ -520,7 +521,7 @@ process_gainref()
     exit 4
   fi
 
-  if [[ "$extension" -eq "dm4" ]]; then
+  if [[ "$extension" == "dm4" ]]; then
   
     output="$outdir/${input%.$extension}.mrc"
     # strip all ./'s
@@ -539,9 +540,22 @@ process_gainref()
     else
       >&2 echo "gainref file $output already exists"
     fi
+
+  elif [[ "$extension" == "gain" ]]; then
+
+    output="$outdir/${input%.$extension}.mrc"
+    if [[ "$output" = ././* ]]; then output="${output:4}"; fi
+    if [[ "$output" = ./* ]]; then output="${output:2}"; fi
+    if [[ $FORCE -eq 1 || ! -e $output ]]; then
+      >&2 echo "converting gainref file $input to $output..."
+      module load ${IMOD_LOAD} || exit $?
+      tif2mrc "$input" "$output" 1>&2 || exit $?
+    else
+      >&2 echo "gainref file $output already exists"
+    fi
   
   # TODO: this needs testing
-  elif [[ "$extension" -eq 'mrc' && ! -e $output ]]; then
+  elif [[ "$extension" == 'mrc' && ! -e $output ]]; then
     
     >&2 echo "Error: output gainref file $output does not exist"
     
