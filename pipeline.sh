@@ -1,18 +1,24 @@
 #!/bin/bash -e
 
 # module loads for programs
-IMOD_VERSION=${IMOD_VERSION:-4.10.42}
+IMOD_VERSION=${IMOD_VERSION:-5.1.11}
 IMOD_LOAD="imod/${IMOD_VERSION}"
-EMAN2_VERSION="20190603"
-EMAN2_LOAD="eman2/${EMAN2_VERSION}"
-MOTIONCOR2_VERSION=${MOTIONCOR2_VERSION:-1.2.3}
+#IMOD_VERSION=${IMOD_VERSION:-4.10.42}
+#IMOD_LOAD="imod/${IMOD_VERSION}"
+#EMAN2_VERSION="20190603"
+#EMAN2_LOAD="eman2/${EMAN2_VERSION}"
+MOTIONCOR2_VERSION=${MOTIONCOR2_VERSION:-1.6.4}
 MOTIONCOR2_LOAD="motioncor2/${MOTIONCOR2_VERSION}"
-#MOTIONCOR2_VERSION="1.2.2"
+#MOTIONCOR2_VERSION=${MOTIONCOR2_VERSION:-1.2.3}
 #MOTIONCOR2_LOAD="motioncor2/${MOTIONCOR2_VERSION}"
-CTFFIND4_VERSION=${CTFFIND4_VERSION:-4.1.10}
-CTFFIND4_LOAD="ctffind/${CTFFIND4_VERSION}"
-RELION_VERSION=${RELION_VERSION:-3.0.4}
+CTFFIND4_VERSION=${CTFFIND4_VERSION:-4.1.14}
+CTFFIND4_LOAD="ctffind4/${CTFFIND4_VERSION}"
+#CTFFIND4_VERSION=${CTFFIND4_VERSION:-4.1.10}
+#CTFFIND4_LOAD="ctffind/${CTFFIND4_VERSION}"
+RELION_VERSION="ver5.0-stable"
 RELION_LOAD="relion/${RELION_VERSION}"
+#RELION_VERSION=${RELION_VERSION:-3.0.4}
+#RELION_LOAD="relion/${RELION_VERSION}"
 IMAGEMAGICK_VERSION=${IMAGEMAGICK_VERSION:=-6.8.9}
 IMAGEMAGICK_LOAD="imagemagick/$IMAGEMAGICK_VERSION"
 
@@ -46,6 +52,9 @@ GPU=${GPU:-0}
 GPU_OFFSET=${GPU_OFFSET:-0}
 FMREF=${FMREF:-0}
 INITDOSE=${INITDOSE:-0}
+FLIPGAIN=${FLIPGAIN:-1}
+OUTSTAR=${OUTSTAR:-1}
+EERSAMPLING=${EERSAMPLING:-1}
 
 # PICKING
 PARTICLE_SIZE=${PARTICLE_SIZE:-150}
@@ -322,8 +331,22 @@ do_spa_align() {
   PROCESSED_ALIGN_FIRST8=${align[first8]}
   PROCESSED_ALIGN_ALL=${align[all]}
 
-  # create a file that relion can read
-  local star=$(create_motioncor_star ${ALIGNED_FILE}) || exit $?
+  # MotionCor2 now creates a STAR file directly. Keep a copy at the legacy path
+  # expected by potential downstream tooling (?) that used create_motioncor_star naming
+  # I don't see any downstream use of this file in this script, but maybe it will break something I can't find
+  # we can get rid of this if not necessary!!
+  local legacy_star="${file%.log0-Patch-Full.log}.star"
+  local micrograph_name=$(basename -- "$MICROGRAPH")
+  local micrograph_stem="${micrograph_name%.*}"
+  local generated_star=$(ls -1t "$(dirname "$file")"/"$micrograph_stem"*.star 2>/dev/null | head -n 1 || true)
+  if [ -z "$generated_star" ]; then
+    >&2 echo "motioncor2 star file not found in $(dirname "$file")"
+    exit 4
+  fi
+  if [ "$generated_star" != "$legacy_star" ]; then
+    >&2 echo "copying motioncor2 star $generated_star to legacy path $legacy_star"
+    cp -f "$generated_star" "$legacy_star" || exit $?
+  fi
 
   echo "  - task: ctf_align"
   local start=$(date +%s.%N)
@@ -501,7 +524,7 @@ process_gainref()
     exit 4
   fi
 
-  if [[ "$extension" -eq "dm4" ]]; then
+  if [[ "$extension" == "dm4" ]]; then
   
     output="$outdir/${input%.$extension}.mrc"
     # strip all ./'s
@@ -520,9 +543,22 @@ process_gainref()
     else
       >&2 echo "gainref file $output already exists"
     fi
+
+  elif [[ "$extension" == "gain" ]]; then
+
+    output="$outdir/${input%.$extension}.mrc"
+    if [[ "$output" = ././* ]]; then output="${output:4}"; fi
+    if [[ "$output" = ./* ]]; then output="${output:2}"; fi
+    if [[ $FORCE -eq 1 || ! -e $output ]]; then
+      >&2 echo "converting gainref file $input to $output..."
+      module load ${IMOD_LOAD} || exit $?
+      tif2mrc "$input" "$output" 1>&2 || exit $?
+    else
+      >&2 echo "gainref file $output already exists"
+    fi
   
   # TODO: this needs testing
-  elif [[ "$extension" -eq 'mrc' && ! -e $output ]]; then
+  elif [[ "$extension" == 'mrc' && ! -e $output ]]; then
     
     >&2 echo "Error: output gainref file $output does not exist"
     
@@ -582,14 +618,29 @@ align_stack()
   if [[ $FORCE -eq 1 || ! -e $output ]]; then
 
     local extension="${input##*.}"
+    local inopt=""
+    local eersampling_opt=""
+    if [ "$extension" == 'mrc' ]; then
+      inopt='-InMrc'
+    elif [ "$extension" == 'tiff' ]; then
+      inopt='-InTiff'
+    elif [ "$extension" == 'eer' ]; then
+      inopt='-InEer'
+      eersampling_opt="-EerSampling $EERSAMPLING"
+    else
+      >&2 echo "unsupported micrograph extension '$extension' for input $input"
+      exit 4
+    fi
     >&2 echo "aligning $extension stack $micrograph to $output, using gainref file $gainref..."
     local gpu=$(($GPU+$GPU_OFFSET))
+    local logdir=$(dirname -- "$output")
     local cmd="
       MotionCor2  \
-        $(if [ "$extension" == 'mrc' ]; then echo '-InMrc'; else echo '-InTiff'; fi) '$micrograph' \
+        $inopt '$micrograph' \
         $(if [ ! '$gainref' == '' ]; then echo -Gain \'$gainref\'; fi) \
+        $(if [ ! "$gainref" == '' ]; then echo '-FlipGain $FLIPGAIN'; fi) \
         -OutMrc $output \
-        -LogFile ${output%.${extension}}.log \
+        -LogDir $logdir \
         -FmDose $FMDOSE \
         -kV $KV \
         -Bft $BFT \
@@ -604,6 +655,8 @@ align_stack()
         -Tol $TOL \
         -OutStack $OUTSTACK \
         -InFmMotion $INFMMOTION \
+        $eersampling_opt \
+        -OutStar $OUTSTAR \
         -Gpu $gpu \
         -GpuMemUsage 0.95
     "
@@ -1047,16 +1100,25 @@ motioncor_file()
   local input=$1
   local extension="${input##*.}"
   local basename=$(basename -- "$input")
-  # sometimes it has the extention?!
+  local stem="${basename%.${extension}}"
+  local datadir=$(dirname -- "$input")
+  # legacy MotionCor2 naming patterns where log files are next to the output file
   local datafile="${input}.log0-Patch-Full.log"
-  if [[ $basename == FoilHole_*  ]]; then
-    datafile="${input%.${extension}}.log0-Patch-Full.log"
-    if [ ! -e $datafile ]; then
-      datafile="${input%.${extension}}.mrc.log0-Patch-Full.log"
-    fi
-  elif [[ "$extension" == "mrc" && ! -e "$datafile" ]]; then
+  if [ ! -e "$datafile" ]; then
     datafile="${input%.${extension}}.log0-Patch-Full.log"
   fi
+  if [ ! -e "$datafile" ]; then
+    datafile="${input%.${extension}}.mrc.log0-Patch-Full.log"
+  fi
+
+  # MotionCor2 LogDir mode writes multiple logs; use the newest matching Patch-Full file.
+  if [ ! -e "$datafile" ]; then
+    local matches=( $(ls -1t "$datadir"/"$stem"*Patch-Full.log 2>/dev/null || true) )
+    if [ ${#matches[@]} -gt 0 ]; then
+      datafile="${matches[0]}"
+    fi
+  fi
+
   echo $datafile
 }
 
@@ -1094,61 +1156,61 @@ END {
 
 }
 
-create_motioncor_star()
-{
-  local input=$1
-  local datafile=$(motioncor_file "$input") 
-  if [ ! -e $datafile ]; then
-    >&2 echo "motioncor2 data file $datafile does not exist"
-    exit 4
-  fi
-  local output="${datafile%.log0-Patch-Full.log}.star"
-  
-  >&2 echo "creating alignment star file $output"
-
-  local binning=1
-  if [ $SUPERRES -eq 1 ]; then
-    binning=2
-  fi
-
-  module load ${IMOD_LOAD}
-  local info=$(header ${MICROGRAPH} | grep 'Number of columns,')
-  local x=$(echo $info | awk '{print $7}')
-  local y=$(echo $info | awk '{print $8}')
-  local z=$(echo $info | awk '{print $9}')
-
-  cat <<EOF > $output 
-
-data_general
-
-_rlnImageSizeX                                     ${x}
-_rlnImageSizeY                                     ${y}
-_rlnImageSizeZ                                       ${z}
-_rlnMicrographMovieName                    ${MICROGRAPH}
-_rlnMicrographGainName                     ${GAINREF_FILE}
-_rlnMicrographBinning                                 ${binning}
-_rlnMicrographOriginalPixelSize                    ${APIX}
-_rlnMicrographDoseRate                             ${FMDOSE}
-_rlnMicrographPreExposure                             ${INITDOSE}
-_rlnVoltage                                         ${KV}
-_rlnMicrographStartFrame                              1
-_rlnMotionModelVersion                                0
-
-
-data_global_shift
-
-loop_
-_rlnMicrographFrameNumber #1
-_rlnMicrographShiftX #2
-_rlnMicrographShiftY #3  
-EOF
-  cat $datafile | tail -n +4 >> $output
-  echo >> $output
-  
-  #>&2 cat $output
-
-  echo $output
-}
+# create_motioncor_star()
+# {
+#   local input=$1
+#   local datafile=$(motioncor_file "$input")
+#   if [ ! -e $datafile ]; then
+#     >&2 echo "motioncor2 data file $datafile does not exist"
+#     exit 4
+#   fi
+#   local output="${datafile%.log0-Patch-Full.log}.star"
+#
+#   >&2 echo "creating alignment star file $output"
+#
+#   local binning=1
+#   if [ $SUPERRES -eq 1 ]; then
+#     binning=2
+#   fi
+#
+#   module load ${IMOD_LOAD}
+#   local info=$(header ${MICROGRAPH} | grep 'Number of columns,')
+#   local x=$(echo $info | awk '{print $7}')
+#   local y=$(echo $info | awk '{print $8}')
+#   local z=$(echo $info | awk '{print $9}')
+#
+#   cat <<EOF > $output
+#
+# data_general
+#
+# _rlnImageSizeX                                     ${x}
+# _rlnImageSizeY                                     ${y}
+# _rlnImageSizeZ                                       ${z}
+# _rlnMicrographMovieName                    ${MICROGRAPH}
+# _rlnMicrographGainName                     ${GAINREF_FILE}
+# _rlnMicrographBinning                                 ${binning}
+# _rlnMicrographOriginalPixelSize                    ${APIX}
+# _rlnMicrographDoseRate                             ${FMDOSE}
+# _rlnMicrographPreExposure                             ${INITDOSE}
+# _rlnVoltage                                         ${KV}
+# _rlnMicrographStartFrame                              1
+# _rlnMotionModelVersion                                0
+#
+#
+# data_global_shift
+#
+# loop_
+# _rlnMicrographFrameNumber #1
+# _rlnMicrographShiftX #2
+# _rlnMicrographShiftY #3
+# EOF
+#   cat $datafile | tail -n +4 >> $output
+#   echo >> $output
+#
+#   #>&2 cat $output
+#
+#   echo $output
+# }
 
 
 set -e
