@@ -15,12 +15,14 @@ CTFFIND4_VERSION=${CTFFIND4_VERSION:-4.1.14}
 CTFFIND4_LOAD="ctffind4/${CTFFIND4_VERSION}"
 #CTFFIND4_VERSION=${CTFFIND4_VERSION:-4.1.10}
 #CTFFIND4_LOAD="ctffind/${CTFFIND4_VERSION}"
-RELION_VERSION="ver5.0-stable"
-RELION_LOAD="relion/${RELION_VERSION}"
+#RELION_VERSION="ver5.0-stable"
+#RELION_LOAD="relion/${RELION_VERSION}"
 #RELION_VERSION=${RELION_VERSION:-3.0.4}
 #RELION_LOAD="relion/${RELION_VERSION}"
-IMAGEMAGICK_VERSION=${IMAGEMAGICK_VERSION:=-6.8.9}
-IMAGEMAGICK_LOAD="imagemagick/$IMAGEMAGICK_VERSION"
+#IMAGEMAGICK_VERSION=${IMAGEMAGICK_VERSION:=-6.8.9}
+#IMAGEMAGICK_LOAD="imagemagick/$IMAGEMAGICK_VERSION"
+PILLOW_VERSION=${PILLOW_VERSION:=-12.3.0}
+PILLOW_LOAD="pillow/$PILLOW_VERSION"
 
 # GENERATE
 # force redo of all files
@@ -57,9 +59,9 @@ OUTSTAR=${OUTSTAR:-1}
 EERSAMPLING=${EERSAMPLING:-1}
 
 # PICKING
-PARTICLE_SIZE=${PARTICLE_SIZE:-150}
-PARTICLE_SIZE_MIN=${PARTICLE_SIZE_MIN:-$(echo $PARTICLE_SIZE | awk '{ print $1*0.8 }')}
-PARTICLE_SIZE_MAX=${PARTICLE_SIZE_MAX:-$(echo $PARTICLE_SIZE | awk '{ print $1*1.2 }')}
+#PARTICLE_SIZE=${PARTICLE_SIZE:-150}
+#PARTICLE_SIZE_MIN=${PARTICLE_SIZE_MIN:-$(echo $PARTICLE_SIZE | awk '{ print $1*0.8 }')}
+#PARTICLE_SIZE_MAX=${PARTICLE_SIZE_MAX:-$(echo $PARTICLE_SIZE | awk '{ print $1*1.2 }')}
 
 # LOCAL COPY
 LOCAL=${LOCAL}
@@ -80,7 +82,6 @@ Optional Arguments:
   [-s|--superres]              input micrograph was taken in super-resolution mode (so we should half the number of pixels)
   [-p|--phase-plate]            input microgrpah was taken using a phase plate (so we should calculate the phase)
   [-P|--patch STRING]          use STRING patch settings for motioncor2 alignment
-  [-e|--particle-size INT]     pick particles with size INT
   [-f|--force]                 reprocess all steps (ignore existing results).
   [-m|--mode [spa|tomo]]       pipeline to use: single particle analysis of tomography
   [-t|--task sum|align|pick|all] what to process; sum the stack, align the stack; just particle pick or all
@@ -105,14 +106,13 @@ main() {
       "--superres") set -- "$@" "-s";;
       "--phase-plate") set -- "$@" "-p";;
       "--patch")   set -- "$@" "-P";;
-      "--particle-size")   set -- "$@" "-e";;
       "--mode")    set -- "$@" "-m";;
       "--task")    set -- "$@" "-t";;
       *)           set -- "$@" "$arg";;
    esac
   done
 
-  while getopts "Fhspm:t:g:b:a:d:k:e:" opt; do
+  while getopts "Fhspm:t:g:b:a:d:k:" opt; do
     case "$opt" in
     g) GAINREF_FILE="$OPTARG";;
     b) BASENAME="$OPTARG";;
@@ -122,7 +122,6 @@ main() {
     s) SUPERRES=1;;
     p) PHASE_PLATE=1;;
     P) PATCH="$OPTARG";;
-    e) PARTICLE_SIZE="$OPTARG";;
     F) FORCE=1;;
     m) MODE="$OPTARG";;
     t) TASK="$OPTARG";;
@@ -202,13 +201,13 @@ do_spa()
     do_spa_sum
   fi
 
-  if [[ "$TASK" == "pick" || "$TASK" == "all" ]]; then
-    # get the assumed pick file name
-    if [ -z $ALIGNED_FILE ]; then
-      ALIGNED_FILE=$(align_file ${MICROGRAPH})  || exit $?
-    fi
-    do_spa_pick
-  fi
+#  if [[ "$TASK" == "pick" || "$TASK" == "all" ]]; then
+#    # get the assumed pick file name
+#    if [ -z $ALIGNED_FILE ]; then
+#      ALIGNED_FILE=$(align_file ${MICROGRAPH})  || exit $?
+#    fi
+#    do_spa_pick
+#  fi
 
   if [[ "$TASK" == "preview" || "$TASK" == "all" ]]; then
     echo "  - task: preview"
@@ -219,7 +218,7 @@ do_spa()
       #echo "ALIGNED_DW_FILE: $ALIGNED_DW_FILE"
       ALIGNED_CTF_FILE=$(align_ctf_file "${MICROGRAPH}") || exit $?
       #echo "ALIGNED_CTF_FILE: $ALIGNED_CTF_FILE"
-      PARTICLE_FILE=$(particle_file ${ALIGNED_DW_FILE}) || exit $?
+      #PARTICLE_FILE=$(particle_file ${ALIGNED_DW_FILE}) || exit $?
       #echo "PARTICLE_FILE: $PARTICLE_FILE"
       SUMMED_CTF_FILE=$(sum_ctf_file "${MICROGRAPH}") || exit $?
       # remove the _sum bit if SUMMED_FILE defined
@@ -472,33 +471,33 @@ do_spa_sum() {
 }
 
 
-do_spa_pick()
-{
-  # use DW file?
-  >&2 echo
+#do_spa_pick()
+#{
+#  # use DW file?
+#  >&2 echo
 
-  if [ -z $ALIGNED_DW_FILE ]; then
-    ALIGNED_DW_FILE=$(align_dw_file "$MICROGRAPH") || exit $?
-  fi 
+#  if [ -z $ALIGNED_DW_FILE ]; then
+#    ALIGNED_DW_FILE=$(align_dw_file "$MICROGRAPH") || exit $?
+#  fi 
 
-  >&2 echo "Processing particle picking for micrograph $ALIGNED_DW_FILE..."
+#  >&2 echo "Processing particle picking for micrograph $ALIGNED_DW_FILE..."
 
-  echo "  - task: particle_pick"
-  local start=$(date +%s.%N)
-  PARTICLE_FILE=$(particle_pick "$ALIGNED_DW_FILE") || exit $?
-  local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
-  echo "    duration: $duration"
-  echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
-  echo "    files:"
-  dump_file_meta "${PARTICLE_FILE}" || exit $?
+#  echo "  - task: particle_pick"
+#  local start=$(date +%s.%N)
+#  PARTICLE_FILE=$(particle_pick "$ALIGNED_DW_FILE") || exit $?
+#  local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
+#  echo "    duration: $duration"
+#  echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
+#  echo "    files:"
+#  dump_file_meta "${PARTICLE_FILE}" || exit $?
 
-  echo "    data:"
-  # 11 non-particle lines
-  local particles=$(wc -l ${PARTICLE_FILE} | awk '{print $1-11}') || exit $?
-  PROCESSED_NUMBER_PARTICLES=$particles
-  echo "      particles: " $particles
+#  echo "    data:"
+#  # 11 non-particle lines
+#  local particles=$(wc -l ${PARTICLE_FILE} | awk '{print $1-11}') || exit $?
+#  PROCESSED_NUMBER_PARTICLES=$particles
+#  echo "      particles: " $particles
 
-}
+#}
 
 
 
@@ -860,45 +859,45 @@ __AVGSTACK_EOF__
   echo $output
 }
 
-particle_file()
-{
-  local input="$1"
-  local dirname=${2:-particles}
-  local extension="${input##*.}"
-  local output="$dirname/${input%.${extension}}_autopick.star"
-  echo $output
-}
+#particle_file()
+#{
+#  local input="$1"
+#  local dirname=${2:-particles}
+#  local extension="${input##*.}"
+#  local output="$dirname/${input%.${extension}}_autopick.star"
+#  echo $output
+#}
 
-particle_pick()
-{
-  local input=$1
-  local dirname=${2:-particles}
+#particle_pick()
+#{
+#  local input=$1
+#  local dirname=${2:-particles}
 
-  >&2 echo
+#  >&2 echo
 
-  if [ ! -e $input ]; then
-    >&2 echo "input micrograph $input not found"
-    exit 4
-  fi
+#  if [ ! -e $input ]; then
+#    >&2 echo "input micrograph $input not found"
+#    exit 4
+#  fi
 
-  local output=$(particle_file "$input") || exit $?
+#  local output=$(particle_file "$input") || exit $?
 
-  if [ -e $output ]; then
-    >&2 echo "particle file $output already exists"
-  fi
-  if [[ $FORCE -eq 1 || ! -e $output ]]; then
+#  if [ -e $output ]; then
+#    >&2 echo "particle file $output already exists"
+#  fi
+#  if [[ $FORCE -eq 1 || ! -e $output ]]; then
 
-    >&2 echo "particle picking from $input to $output..."
-    >&2  echo module load ${RELION_LOAD}
-    module load ${RELION_LOAD} || exit $?
-    local cmd="relion_autopick --i $input --odir $dirname/ --pickname autopick --LoG  --LoG_diam_min $PARTICLE_SIZE_MIN --LoG_diam_max $PARTICLE_SIZE_MAX --angpix $APIX --shrink 0 --lowpass 15 --LoG_adjust_threshold -0.1"
-    >&2 echo $cmd 
-    $cmd 1>&2 || exit $?
+#    >&2 echo "particle picking from $input to $output..."
+#    >&2  echo module load ${RELION_LOAD}
+#    module load ${RELION_LOAD} || exit $?
+#    local cmd="relion_autopick --i $input --odir $dirname/ --pickname autopick --LoG  --LoG_diam_min $PARTICLE_SIZE_MIN --LoG_diam_max $PARTICLE_SIZE_MAX --angpix $APIX --shrink 0 --lowpass 15 --LoG_adjust_threshold -0.1"
+#    >&2 echo $cmd 
+#    $cmd 1>&2 || exit $?
 
-  fi
+#  fi
 
-  echo $output
-}
+#  echo $output
+#}
 
 generate_file_meta()
 {
@@ -958,46 +957,48 @@ generate_preview()
   # create a preview of the image
   # create the picked preview
   #local picked_preview=/tmp/tst.jpg
-  local picked_preview=$(mktemp /tmp/pipeline-picked-XXXXXXXX.jpg) || exit $?
+  #local picked_preview=$(mktemp /tmp/pipeline-picked-XXXXXXXX.jpg) || exit $?
 
-  if [ -e "$picked_preview" ]; then
-    >&2 echo "particle picked preview file $picked_preview already exists..."
-  fi
+  #if [ -e "$picked_preview" ]; then
+  #  >&2 echo "particle picked preview file $picked_preview already exists..."
+  #fi
 
   if [ ! -e "$ALIGNED_DW_FILE" ]; then
     >&2 echo "aligned file $ALIGNED_DW_FILE not found..."
     exit 4
   fi
   local aligned_jpg=$(generate_image "$ALIGNED_DW_FILE" /tmp 0.05) || exit $?
-  if [ ! -e "$PARTICLE_FILE" ]; then
-    >&2 echo "particle file $PARTICLE_FILE not found..."
-    exit 4
-  fi
+  #if [ ! -e "$PARTICLE_FILE" ]; then
+  #  >&2 echo "particle file $PARTICLE_FILE not found..."
+  #  exit 4
+  #fi
 
-  module load ${IMAGEMAGICK_LOAD} || exit $?
+  
+  #module load ${IMAGEMAGICK_LOAD} || exit $?
+  module load ${PILLOW_LOAD} || exit $?
 
   #if [ ! -e "$picked_preview" ]; then
-    local origifs=$IFS
-    IFS=$'
-'
-    local cmd="convert -flip -negate '$aligned_jpg' -strokewidth 3 -stroke yellow -fill none "
-    local size=$( echo "$PARTICLE_SIZE * $APIX" | awk '{ print $1 }' ) || exit $?
-    local i=0
-    for l in $(cat $PARTICLE_FILE | grep -vE '(_|\#|^ $)' ); do
-      local shape=$(echo $l | awk -v size=$size '{print "circle " $1 "," $2 "," $1 + size/2 "," $2 }')
+  #  local origifs=$IFS
+  #  IFS=$'
+#'
+  #  local cmd="convert -flip -negate '$aligned_jpg' -strokewidth 3 -stroke yellow -fill none "
+  #  local size=$( echo "$PARTICLE_SIZE * $APIX" | awk '{ print $1 }' ) || exit $?
+  #  local i=0
+  #  for l in $(cat $PARTICLE_FILE | grep -vE '(_|\#|^ $)' ); do
+  #    local shape=$(echo $l | awk -v size=$size '{print "circle " $1 "," $2 "," $1 + size/2 "," $2 }')
       #cmd="${cmd} -strokewidth 3 -stroke yellow -fill none -draw \" $shape \" "
-      cmd="${cmd} -draw \"$shape\" "
-      i=$((i+1))
+  #    cmd="${cmd} -draw \"$shape\" "
+  #    i=$((i+1))
       #if [ $i -gt 10 ]; then
       #  break;
       #fi
-    done
-    cmd="${cmd}  $picked_preview"
-    IFS=$origifs
+  #  done
+  #  cmd="${cmd}  $picked_preview"
+  #  IFS=$origifs
     #>&2 echo $cmd
-    eval $cmd || exit $?
+  #  eval $cmd || exit $?
   #fi
-  PROCESSED_NUMBER_PARTICLES=${PROCESSED_NUMBER_PARTICLES:-$i}
+  #PROCESSED_NUMBER_PARTICLES=${PROCESSED_NUMBER_PARTICLES:-$i}
 
   # get a timestamp of when file was created
   local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%dT%H:%M:%SZ" -r ${MICROGRAPH}) || exit $?
@@ -1012,14 +1013,48 @@ generate_preview()
   local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.jpg)
   local res="$(printf '%.1f' ${PROCESSED_SUM_RESOLUTION:-0.0})Å ($(echo ${PROCESSED_SUM_RESOLUTION_PERFORMANCE:-0.0} | awk '{printf( "%2.0f", $1*100 )}')%)" || exit $?
   #>&2 echo "ctf res $res"
-  convert \
-    -resize '512x512^' -extent '512x512' $picked_preview \
-    -flip ${SUMMED_CTF_PREVIEW} \
-    +append -font DejaVu-Sans -pointsize 24 -fill SeaGreen1 -stroke SeaGreen3 -strokewidth 1 -draw "text 13,502 \"~$PROCESSED_NUMBER_PARTICLES pp\"" \
-    +append -font DejaVu-Sans -pointsize 24 -fill yellow -stroke orange -strokewidth 1 -draw "text 529,502 \"${timestamp}\"" \
-    +append -font DejaVu-Sans -pointsize 24 -fill yellow -stroke orange -strokewidth 1 -draw "text 864,502 \"$res\"" \
-    $top \
-  || exit $?
+  #convert \
+  #  -resize '512x512^' -extent '512x512' $picked_preview \
+  #  -flip ${SUMMED_CTF_PREVIEW} \
+  #  +append -font DejaVu-Sans -pointsize 24 -fill SeaGreen1 -stroke SeaGreen3 -strokewidth 1 -draw "text 13,502 \"~$PROCESSED_NUMBER_PARTICLES pp\"" \
+  #  +append -font DejaVu-Sans -pointsize 24 -fill yellow -stroke orange -strokewidth 1 -draw "text 529,502 \"${timestamp}\"" \
+  #  +append -font DejaVu-Sans -pointsize 24 -fill yellow -stroke orange -strokewidth 1 -draw "text 864,502 \"$res\"" \
+  #  $top \
+  #|| exit $?
+  # Top composite replacement (Pillow)
+  python3 - "$picked_preview" "$SUMMED_CTF_PREVIEW" "$top" "$PROCESSED_NUMBER_PARTICLES" "$timestamp" "$res" <<'PY'
+  from PIL import Image, ImageOps, ImageDraw, ImageFont
+  import sys
+
+  picked_preview, summed_ctf_preview, top_out, n_particles, timestamp, res_text = sys.argv[1:7]
+
+  def fit_cover(img, w=512, h=512):
+    return ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+
+  left = Image.open(picked_preview).convert("RGB")
+  right = Image.open(summed_ctf_preview).convert("RGB")
+  right = ImageOps.flip(right)
+
+  left = fit_cover(left, 512, 512)
+  right = fit_cover(right, 512, 512)
+
+  canvas = Image.new("RGB", (1024, 512))
+  canvas.paste(left, (0, 0))
+  canvas.paste(right, (512, 0))
+
+  try:
+    font = ImageFont.truetype("DejaVuSans.ttf", 24)
+  except Exception:
+    font = ImageFont.load_default()
+
+  draw = ImageDraw.Draw(canvas)
+  draw.text((13, 502), f"~{n_particles} pp", fill="SeaGreen1", font=font, stroke_width=1, stroke_fill="SeaGreen3")
+  draw.text((529, 502), timestamp, fill="yellow", font=font, stroke_width=1, stroke_fill="orange")
+  draw.text((864, 502), res_text, fill="yellow", font=font, stroke_width=1, stroke_fill="orange")
+
+  canvas.save(top_out, format="JPEG", quality=95)
+PY
+
 
   rm -f $picked_preview $SUMMED_CTF_PREVIEW || exit $?
 
@@ -1034,22 +1069,73 @@ generate_preview()
   local ctf="cs $(printf '%.2f' ${PROCESSED_ALIGN_ASTIGMATISM:-0.0}) cc $(printf '%.2f' ${PROCESSED_ALIGN_CROSS_CORRELATION:-0.0})"
   local drift="$(printf "%.2f" ${PROCESSED_ALIGN_FIRST1:-0.0}) "/" $(printf "%.2f" ${PROCESSED_ALIGN_FIRST5:-0.0}) "/" $(printf "%.2f" ${PROCESSED_ALIGN_ALL:-0.0})"
  # >&2 echo "RES: $res DRIFT: $drift"
-  convert \
-    -resize '512x512^' -extent '512x512' \
-    $aligned_jpg \
-    ${ALIGNED_CTF_PREVIEW} \
-    +append -font DejaVu-Sans -pointsize 24 -fill orange -stroke orange2 -strokewidth 1 -draw "text 274,30 \"$drift\"" \
-    +append -font DejaVu-Sans -pointsize 24 -fill orange -stroke orange2 -strokewidth 1 -draw "text 529,30 \"$ctf\"" \
-    +append -font DejaVu-Sans -pointsize 24 -fill orange -stroke orange2 -strokewidth 1 -draw "text 864,30 \"$res\"" \
-    $bottom \
- || exit $?
+  #convert \
+  #  -resize '512x512^' -extent '512x512' \
+  #  $aligned_jpg \
+  #  ${ALIGNED_CTF_PREVIEW} \
+  #  +append -font DejaVu-Sans -pointsize 24 -fill orange -stroke orange2 -strokewidth 1 -draw "text 274,30 \"$drift\"" \
+  #  +append -font DejaVu-Sans -pointsize 24 -fill orange -stroke orange2 -strokewidth 1 -draw "text 529,30 \"$ctf\"" \
+  #  +append -font DejaVu-Sans -pointsize 24 -fill orange -stroke orange2 -strokewidth 1 -draw "text 864,30 \"$res\"" \
+  #  $bottom \
+  #|| exit $?
+
+  # Bottom composite replacement (Pillow)
+  python3 - "$aligned_jpg" "$ALIGNED_CTF_PREVIEW" "$bottom" "$drift" "$ctf" "$res" <<'PY'
+  from PIL import Image, ImageOps, ImageDraw, ImageFont
+  import sys
+
+  aligned_jpg, aligned_ctf_preview, bottom_out, drift_text, ctf_text, res_text = sys.argv[1:7]
+
+  def fit_cover(img, w=512, h=512):
+    return ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+
+  left = Image.open(aligned_jpg).convert("RGB")
+  right = Image.open(aligned_ctf_preview).convert("RGB")
+
+  left = fit_cover(left, 512, 512)
+  right = fit_cover(right, 512, 512)
+
+  canvas = Image.new("RGB", (1024, 512))
+  canvas.paste(left, (0, 0))
+  canvas.paste(right, (512, 0))
+
+  try:
+    font = ImageFont.truetype("DejaVuSans.ttf", 24)
+  except Exception:
+    font = ImageFont.load_default()
+
+  draw = ImageDraw.Draw(canvas)
+  draw.text((274, 30), drift_text, fill="orange", font=font, stroke_width=1, stroke_fill="orange2")
+  draw.text((529, 30), ctf_text, fill="orange", font=font, stroke_width=1, stroke_fill="orange2")
+  draw.text((864, 30), res_text, fill="orange", font=font, stroke_width=1, stroke_fill="orange2")
+
+  canvas.save(bottom_out, format="JPEG", quality=95)
+PY
 
   # clean files
   rm -f $aligned_jpg $ALIGNED_CTF_PREVIEW || exit $?
 
-  convert $top $bottom \
-     -append $output \
-  || exit $?
+  #convert $top $bottom \
+  #   -append $output \
+  #|| exit $?
+
+  python3 - "$top" "$bottom" "$output" <<'PY'
+  from PIL import Image
+  import sys
+
+  top_path, bottom_path, output_path = sys.argv[1:4]
+
+  top = Image.open(top_path).convert("RGB")
+  bottom = Image.open(bottom_path).convert("RGB")
+
+  width = max(top.width, bottom.width)
+  height = top.height + bottom.height
+
+  canvas = Image.new("RGB", (width, height))
+  canvas.paste(top, (0, 0))
+  canvas.paste(bottom, (0, top.height))
+  canvas.save(output_path, format="JPEG", quality=95)
+PY
   rm -f $top $bottom  || exit $?
 
   if [ ! -e $output ]; then
