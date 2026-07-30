@@ -21,7 +21,7 @@ CTFFIND4_LOAD="ctffind4/${CTFFIND4_VERSION}"
 #RELION_LOAD="relion/${RELION_VERSION}"
 #IMAGEMAGICK_VERSION=${IMAGEMAGICK_VERSION:=-6.8.9}
 #IMAGEMAGICK_LOAD="imagemagick/$IMAGEMAGICK_VERSION"
-PILLOW_VERSION=${PILLOW_VERSION:=-12.3.0}
+PILLOW_VERSION=${PILLOW_VERSION:-12.3.0}
 PILLOW_LOAD="pillow/$PILLOW_VERSION"
 
 # GENERATE
@@ -949,59 +949,23 @@ generate_preview()
   mkdir -p $outdir
   local filename=$(basename -- "$MICROGRAPH") || exit $?
   if [ ! -z ${BASENAME} ]; then
-    filename="${BASENAME}.jpg"
+    filename="${BASENAME}"
   fi
-  local extension="${filename##*.}"
-  local output="$outdir/${filename}"
-
-  # create a preview of the image
-  # create the picked preview
-  #local picked_preview=/tmp/tst.jpg
-  #local picked_preview=$(mktemp /tmp/pipeline-picked-XXXXXXXX.jpg) || exit $?
-
-  #if [ -e "$picked_preview" ]; then
-  #  >&2 echo "particle picked preview file $picked_preview already exists..."
-  #fi
+  local output="$outdir/${filename%.*}.png"
 
   if [ ! -e "$ALIGNED_DW_FILE" ]; then
     >&2 echo "aligned file $ALIGNED_DW_FILE not found..."
     exit 4
   fi
-  local aligned_jpg=$(generate_image "$ALIGNED_DW_FILE" /tmp 0.05) || exit $?
-  #if [ ! -e "$PARTICLE_FILE" ]; then
-  #  >&2 echo "particle file $PARTICLE_FILE not found..."
-  #  exit 4
-  #fi
-
-  
-  #module load ${IMAGEMAGICK_LOAD} || exit $?
-  module load ${PILLOW_LOAD} || exit $?
-
-  #if [ ! -e "$picked_preview" ]; then
-  #  local origifs=$IFS
-  #  IFS=$'
-#'
-  #  local cmd="convert -flip -negate '$aligned_jpg' -strokewidth 3 -stroke yellow -fill none "
-  #  local size=$( echo "$PARTICLE_SIZE * $APIX" | awk '{ print $1 }' ) || exit $?
-  #  local i=0
-  #  for l in $(cat $PARTICLE_FILE | grep -vE '(_|\#|^ $)' ); do
-  #    local shape=$(echo $l | awk -v size=$size '{print "circle " $1 "," $2 "," $1 + size/2 "," $2 }')
-      #cmd="${cmd} -strokewidth 3 -stroke yellow -fill none -draw \" $shape \" "
-  #    cmd="${cmd} -draw \"$shape\" "
-  #    i=$((i+1))
-      #if [ $i -gt 10 ]; then
-      #  break;
-      #fi
-  #  done
-  #  cmd="${cmd}  $picked_preview"
-  #  IFS=$origifs
-    #>&2 echo $cmd
-  #  eval $cmd || exit $?
-  #fi
-  #PROCESSED_NUMBER_PARTICLES=${PROCESSED_NUMBER_PARTICLES:-$i}
+  local aligned_img=$(generate_image "$ALIGNED_DW_FILE" /tmp 0.05 "png") || exit $?
 
   # get a timestamp of when file was created
-  local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%dT%H:%M:%SZ" -r ${MICROGRAPH}) || exit $?
+  local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%d, %H:%M:%S" -r ${MICROGRAPH}) || exit $?
+  local sum_res="$(printf '%.1f' ${PROCESSED_SUM_RESOLUTION:-0.0})Å ($(echo ${PROCESSED_SUM_RESOLUTION_PERFORMANCE:-0.0} | awk '{printf( "%2.0f", $1*100 )}')%)" || exit $?
+  local align_res="$(printf '%.1f' ${PROCESSED_ALIGN_RESOLUTION:-0.0})Å ($(echo ${PROCESSED_ALIGN_RESOLUTION_PERFORMANCE:-0.0} | awk '{printf( "%2.0f", $1*100)}')%)"
+  local drift="$(printf "%.2f" ${PROCESSED_ALIGN_FIRST1:-0.0}) / $(printf "%.2f" ${PROCESSED_ALIGN_FIRST5:-0.0}) / $(printf "%.2f" ${PROCESSED_ALIGN_ALL:-0.0})"
+  local astigmatism="$(printf '%.2f' ${PROCESSED_ALIGN_ASTIGMATISM:-0.0})"
+  local align_cc="$(printf '%.2f' ${PROCESSED_ALIGN_CROSS_CORRELATION:-0.0})"
 
   # create the top half
   if [ ! -e "$SUMMED_CTF_FILE" ]; then
@@ -1010,9 +974,43 @@ generate_preview()
   fi
   SUMMED_CTF_PREVIEW=$(generate_image "${SUMMED_CTF_FILE}" "/tmp" "" "tif" ) || exit $?
 
-  local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.jpg)
-  local res="$(printf '%.1f' ${PROCESSED_SUM_RESOLUTION:-0.0})Å ($(echo ${PROCESSED_SUM_RESOLUTION_PERFORMANCE:-0.0} | awk '{printf( "%2.0f", $1*100 )}')%)" || exit $?
-  #>&2 echo "ctf res $res"
+  local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.png)
+  local info_panel=$(mktemp /tmp/pipeline-info-XXXXXXXX.png) || exit $?
+  
+  module load ${PILLOW_LOAD} || exit $?
+  python3 - "$info_panel" "$timestamp" "$sum_res" "$align_res" "$drift" "$astigmatism" "$align_cc" <<'PY'
+from PIL import Image, ImageDraw, ImageFont
+import sys
+
+panel_out, timestamp, sum_res, align_res, drift, astigmatism, align_cc = sys.argv[1:8]
+
+canvas = Image.new("RGB", (512, 512), (48, 48, 48))
+
+try:
+  font = ImageFont.truetype("DejaVuSans.ttf", 24)
+except Exception:
+  font = ImageFont.load_default()
+
+text = "\n\n".join([
+  f"Timestamp: {timestamp}",
+  f"Est. Resolution / % of Nyquist \n (Before Alignment): {sum_res}",
+  f"Est. Resolution / % of Nyquist \n (After Alignment): {align_res}",
+  f"RMS Drift (first 1 / 5 / All frames): \n {drift}",
+  f"Astigmatism: {astigmatism}",
+  f"Cross Correlation: {align_cc}",
+])
+
+draw = ImageDraw.Draw(canvas)
+draw.multiline_text((20, 20), text, fill="white", font=font, spacing=6)
+
+canvas.save(panel_out, format="PNG")
+PY
+  if [ ! -s "$info_panel" ]; then
+    >&2 echo "failed to generate info panel: $info_panel"
+    exit 4
+  fi
+
+  #>&2 echo "ctf res $sum_res"
   #convert \
   #  -resize '512x512^' -extent '512x512' $picked_preview \
   #  -flip ${SUMMED_CTF_PREVIEW} \
@@ -1022,41 +1020,43 @@ generate_preview()
   #  $top \
   #|| exit $?
   # Top composite replacement (Pillow)
-  python3 - "$picked_preview" "$SUMMED_CTF_PREVIEW" "$top" "$PROCESSED_NUMBER_PARTICLES" "$timestamp" "$res" <<'PY'
-  from PIL import Image, ImageOps, ImageDraw, ImageFont
-  import sys
+  python3 - "$info_panel" "$SUMMED_CTF_PREVIEW" "$top" <<'PY'
+from PIL import Image, ImageOps, ImageDraw, ImageFont
+import sys
 
-  picked_preview, summed_ctf_preview, top_out, n_particles, timestamp, res_text = sys.argv[1:7]
+info_panel, summed_ctf_preview, top_out = sys.argv[1:4]
 
-  def fit_cover(img, w=512, h=512):
-    return ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+def fit_cover(img, w=512, h=512):
+  return ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
 
-  left = Image.open(picked_preview).convert("RGB")
-  right = Image.open(summed_ctf_preview).convert("RGB")
-  right = ImageOps.flip(right)
+left = Image.open(info_panel).convert("RGB")
+right = Image.open(summed_ctf_preview).convert("RGB")
+right = ImageOps.flip(right)
 
-  left = fit_cover(left, 512, 512)
-  right = fit_cover(right, 512, 512)
+left = fit_cover(left, 512, 512)
+right = fit_cover(right, 512, 512)
 
-  canvas = Image.new("RGB", (1024, 512))
-  canvas.paste(left, (0, 0))
-  canvas.paste(right, (512, 0))
+canvas = Image.new("RGBA", (1024, 512), (0, 0, 0, 0))
+canvas.paste(left, (0, 0))
+canvas.paste(right, (512, 0))
 
-  try:
-    font = ImageFont.truetype("DejaVuSans.ttf", 24)
-  except Exception:
-    font = ImageFont.load_default()
+try:
+  label_font = ImageFont.truetype("DejaVuSans.ttf", 24)
+except Exception:
+  label_font = ImageFont.load_default()
 
-  draw = ImageDraw.Draw(canvas)
-  draw.text((13, 502), f"~{n_particles} pp", fill="SeaGreen1", font=font, stroke_width=1, stroke_fill="SeaGreen3")
-  draw.text((529, 502), timestamp, fill="yellow", font=font, stroke_width=1, stroke_fill="orange")
-  draw.text((864, 502), res_text, fill="yellow", font=font, stroke_width=1, stroke_fill="orange")
+draw = ImageDraw.Draw(canvas)
+draw.text((532, 476), "CTF Before Alignment", fill="orange", font=label_font)
 
-  canvas.save(top_out, format="JPEG", quality=95)
+canvas.convert("RGB").save(top_out, format="PNG")
 PY
+  if [ ! -s "$top" ]; then
+    >&2 echo "failed to generate top composite: $top"
+    exit 4
+  fi
 
 
-  rm -f $picked_preview $SUMMED_CTF_PREVIEW || exit $?
+  rm -f $info_panel $SUMMED_CTF_PREVIEW || exit $?
 
   # create the bottom half
   if [ ! -e "$ALIGNED_CTF_FILE" ]; then
@@ -1064,11 +1064,9 @@ PY
     exit 4
   fi
   ALIGNED_CTF_PREVIEW=$(generate_image "${ALIGNED_CTF_FILE}" "/tmp" "" "tif") || exit $?
-  local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.jpg) || exit $?
-  local res="$(printf '%.1f' ${PROCESSED_ALIGN_RESOLUTION:-0.0})Å ($(echo ${PROCESSED_ALIGN_RESOLUTION_PERFORMANCE:-0.0} | awk '{printf( "%2.0f", $1*100)}')%)"
+  local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.png) || exit $?
   local ctf="cs $(printf '%.2f' ${PROCESSED_ALIGN_ASTIGMATISM:-0.0}) cc $(printf '%.2f' ${PROCESSED_ALIGN_CROSS_CORRELATION:-0.0})"
-  local drift="$(printf "%.2f" ${PROCESSED_ALIGN_FIRST1:-0.0}) "/" $(printf "%.2f" ${PROCESSED_ALIGN_FIRST5:-0.0}) "/" $(printf "%.2f" ${PROCESSED_ALIGN_ALL:-0.0})"
- # >&2 echo "RES: $res DRIFT: $drift"
+ # >&2 echo "RES: $align_res DRIFT: $drift"
   #convert \
   #  -resize '512x512^' -extent '512x512' \
   #  $aligned_jpg \
@@ -1080,62 +1078,65 @@ PY
   #|| exit $?
 
   # Bottom composite replacement (Pillow)
-  python3 - "$aligned_jpg" "$ALIGNED_CTF_PREVIEW" "$bottom" "$drift" "$ctf" "$res" <<'PY'
-  from PIL import Image, ImageOps, ImageDraw, ImageFont
-  import sys
+  python3 - "$aligned_img" "$ALIGNED_CTF_PREVIEW" "$bottom" "$drift" "$ctf" "$align_res" <<'PY'
+from PIL import Image, ImageOps, ImageDraw, ImageFont
+import sys
 
-  aligned_jpg, aligned_ctf_preview, bottom_out, drift_text, ctf_text, res_text = sys.argv[1:7]
+aligned_jpg, aligned_ctf_preview, bottom_out, drift_text, ctf_text, res_text = sys.argv[1:7]
 
-  def fit_cover(img, w=512, h=512):
-    return ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
+def fit_cover(img, w=512, h=512):
+  return ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
 
-  left = Image.open(aligned_jpg).convert("RGB")
-  right = Image.open(aligned_ctf_preview).convert("RGB")
+left = Image.open(aligned_jpg).convert("RGB")
+right = Image.open(aligned_ctf_preview).convert("RGB")
 
-  left = fit_cover(left, 512, 512)
-  right = fit_cover(right, 512, 512)
+left = fit_cover(left, 512, 512)
+right = fit_cover(right, 512, 512)
 
-  canvas = Image.new("RGB", (1024, 512))
-  canvas.paste(left, (0, 0))
-  canvas.paste(right, (512, 0))
+canvas = Image.new("RGBA", (1024, 512), (0, 0, 0, 0))
+canvas.paste(left, (0, 0))
+canvas.paste(right, (512, 0))
 
-  try:
-    font = ImageFont.truetype("DejaVuSans.ttf", 24)
-  except Exception:
-    font = ImageFont.load_default()
+try:
+  label_font = ImageFont.truetype("DejaVuSans.ttf", 24)
+except Exception:
+  label_font = ImageFont.load_default()
 
-  draw = ImageDraw.Draw(canvas)
-  draw.text((274, 30), drift_text, fill="orange", font=font, stroke_width=1, stroke_fill="orange2")
-  draw.text((529, 30), ctf_text, fill="orange", font=font, stroke_width=1, stroke_fill="orange2")
-  draw.text((864, 30), res_text, fill="orange", font=font, stroke_width=1, stroke_fill="orange2")
+draw = ImageDraw.Draw(canvas)
+draw.text((20, 20), "Aligned Image", fill="orange", font=label_font)
+draw.text((532, 20), "CTF After Alignment", fill="orange", font=label_font)
 
-  canvas.save(bottom_out, format="JPEG", quality=95)
+canvas.convert("RGB").save(bottom_out, format="PNG")
 PY
+  if [ ! -s "$bottom" ]; then
+    >&2 echo "failed to generate bottom composite: $bottom"
+    exit 4
+  fi
 
   # clean files
-  rm -f $aligned_jpg $ALIGNED_CTF_PREVIEW || exit $?
-
-  #convert $top $bottom \
-  #   -append $output \
-  #|| exit $?
+  rm -f $aligned_img $ALIGNED_CTF_PREVIEW || exit $?
 
   python3 - "$top" "$bottom" "$output" <<'PY'
-  from PIL import Image
-  import sys
+from PIL import Image
+import sys
 
-  top_path, bottom_path, output_path = sys.argv[1:4]
+top_path, bottom_path, output_path = sys.argv[1:4]
 
-  top = Image.open(top_path).convert("RGB")
-  bottom = Image.open(bottom_path).convert("RGB")
+top = Image.open(top_path).convert("RGB")
+bottom = Image.open(bottom_path).convert("RGB")
 
-  width = max(top.width, bottom.width)
-  height = top.height + bottom.height
+width = max(top.width, bottom.width)
+height = top.height + bottom.height
 
-  canvas = Image.new("RGB", (width, height))
-  canvas.paste(top, (0, 0))
-  canvas.paste(bottom, (0, top.height))
-  canvas.save(output_path, format="JPEG", quality=95)
+canvas = Image.new("RGB", (width, height))
+canvas.paste(top, (0, 0))
+canvas.paste(bottom, (0, top.height))
+canvas.save(output_path, format="PNG")
 PY
+  if [ ! -s "$output" ]; then
+    >&2 echo "failed to generate final preview: $output"
+    exit 4
+  fi
   rm -f $top $bottom  || exit $?
 
   if [ ! -e $output ]; then
