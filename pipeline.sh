@@ -65,6 +65,7 @@ EERSAMPLING=${EERSAMPLING:-1}
 
 # LOCAL COPY
 LOCAL=${LOCAL}
+TMP_LOCAL_DIR=${TMP_LOCAL_DIR:-./tmp}
 
 # usage
 usage() {
@@ -91,6 +92,8 @@ __EOF__
 
 # determine what to run
 main() {
+
+  mkdir -p "$TMP_LOCAL_DIR"
 
   # map long arguments to short
   for arg in "$@"; do
@@ -334,12 +337,17 @@ do_spa_align() {
   # expected by potential downstream tooling (?) that used create_motioncor_star naming
   # I don't see any downstream use of this file in this script, but maybe it will break something I can't find
   # we can get rid of this if not necessary!!
-  local legacy_star="${file%.log0-Patch-Full.log}.star"
+  local logdir=$(dirname -- "$file")
+  local legacy_star="${file%-Patch-Full.log}.star"
   local micrograph_name=$(basename -- "$MICROGRAPH")
   local micrograph_stem="${micrograph_name%.*}"
-  local generated_star=$(ls -1t "$(dirname "$file")"/"$micrograph_stem"*.star 2>/dev/null | head -n 1 || true)
+  local expected_star="$logdir/${micrograph_stem}.star"
+  local generated_star="$expected_star"
+  if [ ! -e "$generated_star" ]; then
+    generated_star=$(ls -1t "$logdir"/"$micrograph_stem"*.star 2>/dev/null | head -n 1 || true)
+  fi
   if [ -z "$generated_star" ]; then
-    >&2 echo "motioncor2 star file not found in $(dirname "$file")"
+    >&2 echo "motioncor2 star file not found in $logdir"
     exit 4
   fi
   if [ "$generated_star" != "$legacy_star" ]; then
@@ -383,9 +391,10 @@ sum_ctf_file()
   if [ ! -z "${BASENAME}" ]; then
     input="${BASENAME}"
   fi
-  local extension="${input##*.}"
+  local filename=$(basename -- "$input")
+  local extension="${filename##*.}"
   local outdir=${2:-summed/imod/$IMOD_VERSION/ctffind4/$CTFFIND4_VERSION}
-  local output="$outdir/${input%.${extension}}_sum_ctf.mrc"
+  local output="$outdir/${filename%.${extension}}_sum_ctf.mrc"
   echo $output
 }
 
@@ -395,9 +404,10 @@ align_ctf_file()
   if [ ! -z "${BASENAME}" ]; then
     input="${BASENAME}"
   fi
-  local extension="${input##*.}"
+  local filename=$(basename -- "$input")
+  local extension="${filename##*.}"
   local outdir=${2:-aligned/motioncor2/$MOTIONCOR2_VERSION/ctffind4/$CTFFIND4_VERSION}
-  local output="$outdir/${input%.${extension}}_aligned_ctf.mrc"
+  local output="$outdir/${filename%.${extension}}_aligned_ctf.mrc"
   echo $output
 }
 
@@ -427,7 +437,8 @@ do_spa_sum() {
     echo "  - task: sum"
     local start=$(date +%s.%N)
     local file=$(basename -- "$SUMMED_CTF_FILE") || exit $?
-    local tmpfile="/tmp/${file%_ctf.mrc}.mrc"
+    # local tmpfile="/tmp/${file%_ctf.mrc}.mrc"
+    local tmpfile="$TMP_LOCAL_DIR/${file%_ctf.mrc}.mrc"
     SUMMED_FILE=$(process_sum "$MICROGRAPH" "$tmpfile" "$GAINREF_FILE") || exit $?
     summed_file_log="${SUMMED_FILE%.mrc}.log"
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
@@ -536,7 +547,8 @@ process_gainref()
       dm2mrc "$input" "$output"  1>&2 || exit $?
       if [[ "$SUPERRES" == "0" ]]; then
         >&2 echo "binning gain ref for non-superres $SUPERRES"
-        >&2 newstack -bin 2 "$output" "/tmp/${filename%.$extension}.mrc" && mv "/tmp/${filename%.$extension}.mrc" "$output" || exit $?
+        # >&2 newstack -bin 2 "$output" "/tmp/${filename%.$extension}.mrc" && mv "/tmp/${filename%.$extension}.mrc" "$output" || exit $?
+        >&2 newstack -bin 2 "$output" "$TMP_LOCAL_DIR/${filename%.$extension}.mrc" && mv "$TMP_LOCAL_DIR/${filename%.$extension}.mrc" "$output" || exit $?
       fi
 
     else
@@ -791,7 +803,8 @@ generate_image()
     module load ${IMOD_LOAD} || exit $?
     tmpfile=$input
     if [ "$lowpass" != "" ]; then
-      tmpfile=/tmp/${filename}
+      # tmpfile=/tmp/${filename}
+      tmpfile="$TMP_LOCAL_DIR/${filename}"
       echo "clip filter -l $lowpass $input $tmpfile" 1>&2 
       clip filter -l $lowpass $input $tmpfile 1>&2 || exit $?
     fi
@@ -842,7 +855,8 @@ process_sum()
 
   if [[ $FORCE -eq 1 || ! -e $output ]]; then
     >&2 echo "summing stack $input to $output..."
-    local tmpfile=$(mktemp /tmp/pipeline-sum.XXXXXX) || exit $?
+    # local tmpfile=$(mktemp /tmp/pipeline-sum.XXXXXX) || exit $?
+    local tmpfile=$(mktemp "$TMP_LOCAL_DIR/pipeline-sum.XXXXXX") || exit $?
     module load ${IMOD_LOAD} || exit $?
     >&2 echo "avgstack $input $tmpfile /"
     avgstack > $log << __AVGSTACK_EOF__
@@ -957,7 +971,8 @@ generate_preview()
     >&2 echo "aligned file $ALIGNED_DW_FILE not found..."
     exit 4
   fi
-  local aligned_img=$(generate_image "$ALIGNED_DW_FILE" /tmp 0.05 "png") || exit $?
+  # local aligned_img=$(generate_image "$ALIGNED_DW_FILE" /tmp 0.05 "png") || exit $?
+  local aligned_img=$(generate_image "$ALIGNED_DW_FILE" "$TMP_LOCAL_DIR" 0.05 "png") || exit $?
 
   # get a timestamp of when file was created
   local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%d, %H:%M:%S" -r ${MICROGRAPH}) || exit $?
@@ -972,10 +987,13 @@ generate_preview()
     >&2 echo "summed ctf file $SUMMED_CTF_FILE not found..."
     exit 4
   fi
-  SUMMED_CTF_PREVIEW=$(generate_image "${SUMMED_CTF_FILE}" "/tmp" "" "tif" ) || exit $?
+  # SUMMED_CTF_PREVIEW=$(generate_image "${SUMMED_CTF_FILE}" "/tmp" "" "tif" ) || exit $?
+  SUMMED_CTF_PREVIEW=$(generate_image "${SUMMED_CTF_FILE}" "$TMP_LOCAL_DIR" "" "tif" ) || exit $?
 
-  local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.png)
-  local info_panel=$(mktemp /tmp/pipeline-info-XXXXXXXX.png) || exit $?
+  # local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.png)
+  local top=$(mktemp "$TMP_LOCAL_DIR/pipeline-top-XXXXXXXX.png")
+  # local info_panel=$(mktemp /tmp/pipeline-info-XXXXXXXX.png) || exit $?
+  local info_panel=$(mktemp "$TMP_LOCAL_DIR/pipeline-info-XXXXXXXX.png") || exit $?
   
   module load ${PILLOW_LOAD} || exit $?
   python3 - "$info_panel" "$timestamp" "$sum_res" "$align_res" "$drift" "$astigmatism" "$align_cc" <<'PY'
@@ -1056,15 +1074,17 @@ PY
   fi
 
 
-  rm -f $info_panel $SUMMED_CTF_PREVIEW || exit $?
+  #rm -f $info_panel $SUMMED_CTF_PREVIEW || exit $?
 
   # create the bottom half
   if [ ! -e "$ALIGNED_CTF_FILE" ]; then
     >&2 echo "aligned ctf file $ALIGNED_CTF_FILE not found..."
     exit 4
   fi
-  ALIGNED_CTF_PREVIEW=$(generate_image "${ALIGNED_CTF_FILE}" "/tmp" "" "tif") || exit $?
-  local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.png) || exit $?
+  # ALIGNED_CTF_PREVIEW=$(generate_image "${ALIGNED_CTF_FILE}" "/tmp" "" "tif") || exit $?
+  ALIGNED_CTF_PREVIEW=$(generate_image "${ALIGNED_CTF_FILE}" "$TMP_LOCAL_DIR" "" "tif") || exit $?
+  # local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.png) || exit $?
+  local bottom=$(mktemp "$TMP_LOCAL_DIR/pipeline-bottom-XXXXXXXX.png") || exit $?
   local ctf="cs $(printf '%.2f' ${PROCESSED_ALIGN_ASTIGMATISM:-0.0}) cc $(printf '%.2f' ${PROCESSED_ALIGN_CROSS_CORRELATION:-0.0})"
  # >&2 echo "RES: $align_res DRIFT: $drift"
   #convert \
@@ -1114,7 +1134,7 @@ PY
   fi
 
   # clean files
-  rm -f $aligned_img $ALIGNED_CTF_PREVIEW || exit $?
+  #rm -f $aligned_img $ALIGNED_CTF_PREVIEW || exit $?
 
   python3 - "$top" "$bottom" "$output" <<'PY'
 from PIL import Image
@@ -1137,7 +1157,7 @@ PY
     >&2 echo "failed to generate final preview: $output"
     exit 4
   fi
-  rm -f $top $bottom  || exit $?
+  #rm -f $top $bottom  || exit $?
 
   if [ ! -e $output ]; then
     exit 4
@@ -1188,19 +1208,14 @@ motioncor_file()
   local extension="${input##*.}"
   local basename=$(basename -- "$input")
   local stem="${basename%.${extension}}"
+  local micrograph_stem="${stem%_aligned_DW}"
+  micrograph_stem="${micrograph_stem%_aligned}"
   local datadir=$(dirname -- "$input")
-  # legacy MotionCor2 naming patterns where log files are next to the output file
-  local datafile="${input}.log0-Patch-Full.log"
-  if [ ! -e "$datafile" ]; then
-    datafile="${input%.${extension}}.log0-Patch-Full.log"
-  fi
-  if [ ! -e "$datafile" ]; then
-    datafile="${input%.${extension}}.mrc.log0-Patch-Full.log"
-  fi
+  local datafile="$datadir/${micrograph_stem}-Patch-Full.log"
 
-  # MotionCor2 LogDir mode writes multiple logs; use the newest matching Patch-Full file.
+  # MotionCor2 LogDir mode can write multiple logs; use the newest matching Patch-Full file.
   if [ ! -e "$datafile" ]; then
-    local matches=( $(ls -1t "$datadir"/"$stem"*Patch-Full.log 2>/dev/null || true) )
+    local matches=( $(ls -1t "$datadir"/"$micrograph_stem"*Patch-Full.log 2>/dev/null || true) )
     if [ ${#matches[@]} -gt 0 ]; then
       datafile="${matches[0]}"
     fi
