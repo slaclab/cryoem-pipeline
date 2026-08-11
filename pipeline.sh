@@ -65,7 +65,6 @@ EERSAMPLING=${EERSAMPLING:-1}
 
 # LOCAL COPY
 LOCAL=${LOCAL}
-TMP_LOCAL_DIR=${TMP_LOCAL_DIR:-./tmp}
 
 # usage
 usage() {
@@ -92,8 +91,6 @@ __EOF__
 
 # determine what to run
 main() {
-
-  mkdir -p "$TMP_LOCAL_DIR"
 
   # map long arguments to short
   for arg in "$@"; do
@@ -437,8 +434,7 @@ do_spa_sum() {
     echo "  - task: sum"
     local start=$(date +%s.%N)
     local file=$(basename -- "$SUMMED_CTF_FILE") || exit $?
-    # local tmpfile="/tmp/${file%_ctf.mrc}.mrc"
-    local tmpfile="$TMP_LOCAL_DIR/${file%_ctf.mrc}.mrc"
+    local tmpfile="/tmp/${file%_ctf.mrc}.mrc"
     SUMMED_FILE=$(process_sum "$MICROGRAPH" "$tmpfile" "$GAINREF_FILE") || exit $?
     summed_file_log="${SUMMED_FILE%.mrc}.log"
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
@@ -482,35 +478,6 @@ do_spa_sum() {
 }
 
 
-#do_spa_pick()
-#{
-#  # use DW file?
-#  >&2 echo
-
-#  if [ -z $ALIGNED_DW_FILE ]; then
-#    ALIGNED_DW_FILE=$(align_dw_file "$MICROGRAPH") || exit $?
-#  fi 
-
-#  >&2 echo "Processing particle picking for micrograph $ALIGNED_DW_FILE..."
-
-#  echo "  - task: particle_pick"
-#  local start=$(date +%s.%N)
-#  PARTICLE_FILE=$(particle_pick "$ALIGNED_DW_FILE") || exit $?
-#  local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
-#  echo "    duration: $duration"
-#  echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
-#  echo "    files:"
-#  dump_file_meta "${PARTICLE_FILE}" || exit $?
-
-#  echo "    data:"
-#  # 11 non-particle lines
-#  local particles=$(wc -l ${PARTICLE_FILE} | awk '{print $1-11}') || exit $?
-#  PROCESSED_NUMBER_PARTICLES=$particles
-#  echo "      particles: " $particles
-
-#}
-
-
 
 function gen_template() {
   eval "echo \"$1\""
@@ -547,8 +514,7 @@ process_gainref()
       dm2mrc "$input" "$output"  1>&2 || exit $?
       if [[ "$SUPERRES" == "0" ]]; then
         >&2 echo "binning gain ref for non-superres $SUPERRES"
-        # >&2 newstack -bin 2 "$output" "/tmp/${filename%.$extension}.mrc" && mv "/tmp/${filename%.$extension}.mrc" "$output" || exit $?
-        >&2 newstack -bin 2 "$output" "$TMP_LOCAL_DIR/${filename%.$extension}.mrc" && mv "$TMP_LOCAL_DIR/${filename%.$extension}.mrc" "$output" || exit $?
+        >&2 newstack -bin 2 "$output" "/tmp/${filename%.$extension}.mrc" && mv "/tmp/${filename%.$extension}.mrc" "$output" || exit $?
       fi
 
     else
@@ -803,8 +769,7 @@ generate_image()
     module load ${IMOD_LOAD} || exit $?
     tmpfile=$input
     if [ "$lowpass" != "" ]; then
-      # tmpfile=/tmp/${filename}
-      tmpfile="$TMP_LOCAL_DIR/${filename}"
+      tmpfile=/tmp/${filename}
       echo "clip filter -l $lowpass $input $tmpfile" 1>&2 
       clip filter -l $lowpass $input $tmpfile 1>&2 || exit $?
     fi
@@ -812,8 +777,17 @@ generate_image()
     if [ "${format}" == "jpg" ]; then
       opts="-j"
     fi
-    echo "mrc2tif ${opts} $tmpfile $output" 1>&2
-    mrc2tif ${opts} $tmpfile $output 1>&2 || exit $?
+    # reads density info from the header and extracts min/max values
+    header_info=$(header "$tmpfile" 2>&1)
+    min_density=$(grep -i 'Minimum Density' <<< "$header_info" | awk -F'\.\.\.' '{print $NF}' | awk '{print $1}')
+    max_density=$(grep -i 'Maximum Density' <<< "$header_info" | awk -F'\.\.\.' '{print $NF}' | awk '{print $1}')
+
+    echo "executing: .mrc to .tif conversion" 1>&2
+    # imod command to convert .mrc to .tif
+    echo "mrc2tif -C \"${min_density}\",\"${max_density}\" \"$tmpfile\" \"$output\"" 1>&2 
+    mrc2tif -C "${min_density}","${max_density}" "$tmpfile" "$output" 1>&2 || exit $?
+    #echo "mrc2tif ${opts} $tmpfile $output" 1>&2
+    #mrc2tif ${opts} $tmpfile $output 1>&2 || exit $?
     if [ "$lowpass" != "" ]; then
       echo "rm -f $tmpfile" 1>&2
       rm -f $tmpfile || exit $?
@@ -855,8 +829,7 @@ process_sum()
 
   if [[ $FORCE -eq 1 || ! -e $output ]]; then
     >&2 echo "summing stack $input to $output..."
-    # local tmpfile=$(mktemp /tmp/pipeline-sum.XXXXXX) || exit $?
-    local tmpfile=$(mktemp "$TMP_LOCAL_DIR/pipeline-sum.XXXXXX") || exit $?
+    local tmpfile=$(mktemp /tmp/pipeline-sum.XXXXXX) || exit $?
     module load ${IMOD_LOAD} || exit $?
     >&2 echo "avgstack $input $tmpfile /"
     avgstack > $log << __AVGSTACK_EOF__
@@ -872,46 +845,6 @@ __AVGSTACK_EOF__
 
   echo $output
 }
-
-#particle_file()
-#{
-#  local input="$1"
-#  local dirname=${2:-particles}
-#  local extension="${input##*.}"
-#  local output="$dirname/${input%.${extension}}_autopick.star"
-#  echo $output
-#}
-
-#particle_pick()
-#{
-#  local input=$1
-#  local dirname=${2:-particles}
-
-#  >&2 echo
-
-#  if [ ! -e $input ]; then
-#    >&2 echo "input micrograph $input not found"
-#    exit 4
-#  fi
-
-#  local output=$(particle_file "$input") || exit $?
-
-#  if [ -e $output ]; then
-#    >&2 echo "particle file $output already exists"
-#  fi
-#  if [[ $FORCE -eq 1 || ! -e $output ]]; then
-
-#    >&2 echo "particle picking from $input to $output..."
-#    >&2  echo module load ${RELION_LOAD}
-#    module load ${RELION_LOAD} || exit $?
-#    local cmd="relion_autopick --i $input --odir $dirname/ --pickname autopick --LoG  --LoG_diam_min $PARTICLE_SIZE_MIN --LoG_diam_max $PARTICLE_SIZE_MAX --angpix $APIX --shrink 0 --lowpass 15 --LoG_adjust_threshold -0.1"
-#    >&2 echo $cmd 
-#    $cmd 1>&2 || exit $?
-
-#  fi
-
-#  echo $output
-#}
 
 generate_file_meta()
 {
@@ -971,8 +904,7 @@ generate_preview()
     >&2 echo "aligned file $ALIGNED_DW_FILE not found..."
     exit 4
   fi
-  # local aligned_img=$(generate_image "$ALIGNED_DW_FILE" /tmp 0.05 "png") || exit $?
-  local aligned_img=$(generate_image "$ALIGNED_DW_FILE" "$TMP_LOCAL_DIR" 0.05 "png") || exit $?
+  local aligned_img=$(generate_image "$ALIGNED_DW_FILE" /tmp 0.05 "png") || exit $?
 
   # get a timestamp of when file was created
   local timestamp=$(TZ=America/Los_Angeles date +"%Y-%m-%d, %H:%M:%S" -r ${MICROGRAPH}) || exit $?
@@ -987,13 +919,10 @@ generate_preview()
     >&2 echo "summed ctf file $SUMMED_CTF_FILE not found..."
     exit 4
   fi
-  # SUMMED_CTF_PREVIEW=$(generate_image "${SUMMED_CTF_FILE}" "/tmp" "" "tif" ) || exit $?
-  SUMMED_CTF_PREVIEW=$(generate_image "${SUMMED_CTF_FILE}" "$TMP_LOCAL_DIR" "" "tif" ) || exit $?
+  SUMMED_CTF_PREVIEW=$(generate_image "${SUMMED_CTF_FILE}" "/tmp" "" "tif" ) || exit $?
 
-  # local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.png)
-  local top=$(mktemp "$TMP_LOCAL_DIR/pipeline-top-XXXXXXXX.png")
-  # local info_panel=$(mktemp /tmp/pipeline-info-XXXXXXXX.png) || exit $?
-  local info_panel=$(mktemp "$TMP_LOCAL_DIR/pipeline-info-XXXXXXXX.png") || exit $?
+  local top=$(mktemp /tmp/pipeline-top-XXXXXXXX.png)
+  local info_panel=$(mktemp /tmp/pipeline-info-XXXXXXXX.png) || exit $?
   
   module load ${PILLOW_LOAD} || exit $?
   python3 - "$info_panel" "$timestamp" "$sum_res" "$align_res" "$drift" "$astigmatism" "$align_cc" <<'PY'
@@ -1013,8 +942,8 @@ text = "\n\n".join([
   f"Timestamp: {timestamp}",
   f"Est. Resolution / % of Nyquist \n (Before Alignment): {sum_res}",
   f"Est. Resolution / % of Nyquist \n (After Alignment): {align_res}",
-  f"RMS Drift (first 1 / 5 / All frames): \n {drift}",
-  f"Astigmatism: {astigmatism}",
+  f"RMS Drift (first 1 / 5 / All frames): \n {drift} pix",
+  f"Azimuth of Astigmatism: {astigmatism}\N{DEGREE SIGN}",
   f"Cross Correlation: {align_cc}",
 ])
 
@@ -1038,18 +967,18 @@ PY
   #  $top \
   #|| exit $?
   # Top composite replacement (Pillow)
-  python3 - "$info_panel" "$SUMMED_CTF_PREVIEW" "$top" <<'PY'
+  python3 - "$info_panel" "$SUMMED_CTF_PREVIEW" "$top" "$sum_res" <<'PY'
 from PIL import Image, ImageOps, ImageDraw, ImageFont
 import sys
 
-info_panel, summed_ctf_preview, top_out = sys.argv[1:4]
+info_panel, summed_ctf_preview, top_out, sum_res_text = sys.argv[1:5]
 
 def fit_cover(img, w=512, h=512):
   return ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
 
 left = Image.open(info_panel).convert("RGB")
 right = Image.open(summed_ctf_preview).convert("RGB")
-right = ImageOps.flip(right)
+#right = ImageOps.flip(right)
 
 left = fit_cover(left, 512, 512)
 right = fit_cover(right, 512, 512)
@@ -1059,12 +988,13 @@ canvas.paste(left, (0, 0))
 canvas.paste(right, (512, 0))
 
 try:
-  label_font = ImageFont.truetype("DejaVuSans.ttf", 24)
+  label_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 24)
 except Exception:
   label_font = ImageFont.load_default()
 
 draw = ImageDraw.Draw(canvas)
-draw.text((532, 476), "CTF Before Alignment", fill="orange", font=label_font)
+draw.text((532, 476), "CTF Before Alignment", fill="cyan", font=label_font)
+draw.text((864, 476), sum_res_text, fill="cyan", font=label_font)
 
 canvas.convert("RGB").save(top_out, format="PNG")
 PY
@@ -1074,18 +1004,16 @@ PY
   fi
 
 
-  #rm -f $info_panel $SUMMED_CTF_PREVIEW || exit $?
+  rm -f $info_panel $SUMMED_CTF_PREVIEW || exit $?
 
   # create the bottom half
   if [ ! -e "$ALIGNED_CTF_FILE" ]; then
     >&2 echo "aligned ctf file $ALIGNED_CTF_FILE not found..."
     exit 4
   fi
-  # ALIGNED_CTF_PREVIEW=$(generate_image "${ALIGNED_CTF_FILE}" "/tmp" "" "tif") || exit $?
-  ALIGNED_CTF_PREVIEW=$(generate_image "${ALIGNED_CTF_FILE}" "$TMP_LOCAL_DIR" "" "tif") || exit $?
-  # local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.png) || exit $?
-  local bottom=$(mktemp "$TMP_LOCAL_DIR/pipeline-bottom-XXXXXXXX.png") || exit $?
-  local ctf="cs $(printf '%.2f' ${PROCESSED_ALIGN_ASTIGMATISM:-0.0}) cc $(printf '%.2f' ${PROCESSED_ALIGN_CROSS_CORRELATION:-0.0})"
+  ALIGNED_CTF_PREVIEW=$(generate_image "${ALIGNED_CTF_FILE}" "/tmp" "" "tif") || exit $?
+  local bottom=$(mktemp /tmp/pipeline-bottom-XXXXXXXX.png) || exit $?
+  #local ctf="cs $(printf '%.2f' ${PROCESSED_ALIGN_ASTIGMATISM:-0.0}) cc $(printf '%.2f' ${PROCESSED_ALIGN_CROSS_CORRELATION:-0.0})"
  # >&2 echo "RES: $align_res DRIFT: $drift"
   #convert \
   #  -resize '512x512^' -extent '512x512' \
@@ -1098,11 +1026,11 @@ PY
   #|| exit $?
 
   # Bottom composite replacement (Pillow)
-  python3 - "$aligned_img" "$ALIGNED_CTF_PREVIEW" "$bottom" "$drift" "$ctf" "$align_res" <<'PY'
+  python3 - "$aligned_img" "$ALIGNED_CTF_PREVIEW" "$bottom" "$align_res" <<'PY'
 from PIL import Image, ImageOps, ImageDraw, ImageFont
 import sys
 
-aligned_jpg, aligned_ctf_preview, bottom_out, drift_text, ctf_text, res_text = sys.argv[1:7]
+aligned_jpg, aligned_ctf_preview, bottom_out, align_res_text = sys.argv[1:5]
 
 def fit_cover(img, w=512, h=512):
   return ImageOps.fit(img, (w, h), method=Image.Resampling.LANCZOS, centering=(0.5, 0.5))
@@ -1118,13 +1046,14 @@ canvas.paste(left, (0, 0))
 canvas.paste(right, (512, 0))
 
 try:
-  label_font = ImageFont.truetype("DejaVuSans.ttf", 24)
+  label_font = ImageFont.truetype("DejaVuSans-Bold.ttf", 24)
 except Exception:
   label_font = ImageFont.load_default()
 
 draw = ImageDraw.Draw(canvas)
-draw.text((20, 20), "Aligned Image", fill="orange", font=label_font)
-draw.text((532, 20), "CTF After Alignment", fill="orange", font=label_font)
+draw.text((20, 8), "Aligned Image", fill="cyan", font=label_font)
+draw.text((532, 8), "CTF After Alignment", fill="cyan", font=label_font)
+draw.text((864, 8), align_res_text, fill="cyan", font=label_font)
 
 canvas.convert("RGB").save(bottom_out, format="PNG")
 PY
@@ -1134,7 +1063,7 @@ PY
   fi
 
   # clean files
-  #rm -f $aligned_img $ALIGNED_CTF_PREVIEW || exit $?
+  rm -f $aligned_img $ALIGNED_CTF_PREVIEW || exit $?
 
   python3 - "$top" "$bottom" "$output" <<'PY'
 from PIL import Image
@@ -1157,7 +1086,7 @@ PY
     >&2 echo "failed to generate final preview: $output"
     exit 4
   fi
-  #rm -f $top $bottom  || exit $?
+  rm -f $top $bottom  || exit $?
 
   if [ ! -e $output ]; then
     exit 4
@@ -1257,62 +1186,6 @@ END {
 # print "    - "lastx "-"x" ("dx*dx")\t" lasty "-"y" ("dy*dy"):\t" n;
 
 }
-
-# create_motioncor_star()
-# {
-#   local input=$1
-#   local datafile=$(motioncor_file "$input")
-#   if [ ! -e $datafile ]; then
-#     >&2 echo "motioncor2 data file $datafile does not exist"
-#     exit 4
-#   fi
-#   local output="${datafile%.log0-Patch-Full.log}.star"
-#
-#   >&2 echo "creating alignment star file $output"
-#
-#   local binning=1
-#   if [ $SUPERRES -eq 1 ]; then
-#     binning=2
-#   fi
-#
-#   module load ${IMOD_LOAD}
-#   local info=$(header ${MICROGRAPH} | grep 'Number of columns,')
-#   local x=$(echo $info | awk '{print $7}')
-#   local y=$(echo $info | awk '{print $8}')
-#   local z=$(echo $info | awk '{print $9}')
-#
-#   cat <<EOF > $output
-#
-# data_general
-#
-# _rlnImageSizeX                                     ${x}
-# _rlnImageSizeY                                     ${y}
-# _rlnImageSizeZ                                       ${z}
-# _rlnMicrographMovieName                    ${MICROGRAPH}
-# _rlnMicrographGainName                     ${GAINREF_FILE}
-# _rlnMicrographBinning                                 ${binning}
-# _rlnMicrographOriginalPixelSize                    ${APIX}
-# _rlnMicrographDoseRate                             ${FMDOSE}
-# _rlnMicrographPreExposure                             ${INITDOSE}
-# _rlnVoltage                                         ${KV}
-# _rlnMicrographStartFrame                              1
-# _rlnMotionModelVersion                                0
-#
-#
-# data_global_shift
-#
-# loop_
-# _rlnMicrographFrameNumber #1
-# _rlnMicrographShiftX #2
-# _rlnMicrographShiftY #3
-# EOF
-#   cat $datafile | tail -n +4 >> $output
-#   echo >> $output
-#
-#   #>&2 cat $output
-#
-#   echo $output
-# }
 
 
 set -e
