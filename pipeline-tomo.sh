@@ -9,6 +9,8 @@ FFMPEG_VERSION="4.4.2"
 FFMPEG_LOAD="ffmpeg/${FFMPEG_VERSION}"
 PYLIBS_VERSION="1.1"
 PYLIBS_LOAD="pylibs/${PYLIBS_VERSION}"
+ISONET_VERSION="2.0.0"
+ISONET_LOAD="isonet/${ISONET_VERSION}"
 
 # GENERATE
 # select mode/task and define terms
@@ -26,6 +28,7 @@ APIX=${APIX}
 SUPERRES=${SUPERRES:-0}
 PHASE_PLATE=${PHASE_PLATE:-0}
 AMPLITUDE_CONTRAST=${AMPLITUDE_CONTRAST:-0.1}
+LOWPASS=${LOWPASS:-40}
 
 #ARETOMO PARAMETERS
 CMD=${CMD:-0}
@@ -49,10 +52,12 @@ DARKTOL=${DARKTOL:-0.75}
 TILT_KEEP_RATIO=${TILT_KEEP_RATIO:-0.9}
 TILTCOR=${TILTCOR:-1}
 CORR_CTF=${CORR_CTF:-1}
-LOWPASS=${LOWPASS:-40}
 CTF_ARG=${CTF_ARG:-"-CorrCTF ${CORR_CTF} ${LOWPASS}"}
 OUTXF=${OUTXF:-0}
 FLIPVOL=${FLIPVOL}
+
+# ISONET PARAMS
+# - add isonet params 
 
 #help function: explains required and optional arguments 
 usage() {
@@ -366,7 +371,7 @@ do_spa()
 do_tomo() {
   if [ ${NO_PREAMBLE} -eq 0  ]; then
     do_prepipeline
-    if [[ "$TASK" == "reconstruct" || "$TASK" == "preview" || "$TASK" == "all" ]]; then
+    if [[ "$TASK" == "reconstruct" || "$TASK" == "denoise" || "$TASK" == "preview" || "$TASK" == "all" ]]; then
       local force=${FORCE}
       if [ ${NO_FORCE_GAINREF} -eq 1 ]; then
         FORCE=0
@@ -389,9 +394,11 @@ do_tomo() {
   local preview_dir="$PREVIEW_DIR"
   local expected_tomogram="${reconstructed_dir}/$(basename "${MDOC%.*}")_Vol.mrc"
 
-  if [[ "$TASK" != "reconstruct" && "$TASK" != "preview" && "$TASK" != "all" ]]; then
-    >&2 echo "Error: Invalid task specified: $TASK . Valid options are: reconstruct, preview, all."
+  if [[ "$TASK" != "reconstruct" && "$TASK" != "denoise" && "$TASK" != "preview" && "$TASK" != "all" ]]; then
+    >&2 echo "Error: Invalid task specified: $TASK . Valid options are: reconstruct, denoise, preview, all."
     usage
+    # here include rules for denoise/refine
+    # should they be able to just denoise/refine no) need evn/odd yes) can use deconv if no evn/odd split (maybe?)
     exit 1
   fi
 
@@ -405,6 +412,35 @@ do_tomo() {
     else
       tomo_reconstruction "$MDOC" "$GAINREF_FILE" "$reconstructed_dir" || exit $?
       TOMOGRAM=$(tomogram "$MDOC" "$reconstructed_dir") || exit $?
+    fi
+    local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
+    echo "    duration: $duration"
+    echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
+  fi
+
+  if [[ "$TASK" == "denoise" || "$TASK" == "all" ]]; then
+    #temp: disable denoise task if reconstruct task has not been run yet
+    # - add a better way to check
+    if [[ "$TASK" == "denoise" && "$TASK" != "reconstruct" ]]; then
+      >&2 echo "Error: denoise task requires reconstruct task to be run first."
+      exit 1
+    fi
+
+    # input code to ensure that all mdocs have been processed before creating star
+    # - maybe get num of mdocs in input directory
+
+
+    echo "  - task: denoise"
+    local start=$(date +%s.%N)
+    if [[ ! -f "$expected_tomogram" ]]; then
+      >&2 echo "Error: tomogram file $expected_tomogram does not exist for denoising."
+      exit 1
+    else
+      TOMOGRAM="$expected_tomogram"
+      local star_path=$(prepare_star "$RECONSTRUCTED_DIR") || exit $?
+      local denoise_path=$(tomo_denoise "$star_path" "$RECONSTRUCTED_DIR/denoised") || exit $?
+      echo "    files successfully generated in $denoise_path:"
+      # add dump_meta in function
     fi
     local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
     echo "    duration: $duration"
@@ -620,7 +656,8 @@ tomo_reconstruction() {
 }
 
 # find and return the reconstructed tomogram file
-tomogram() {
+# - also output tomograms into a directory for star file generation (separate into EVN/ODD)
+pre_ctf_tomogram() {
   local input=$1
   local outdir="${2:-OUTDIR}"
   local filename=$(basename -- "$input")
@@ -643,6 +680,87 @@ tomogram() {
   fi
 }
 
+# create function to prepare star file for tomo reconstruction
+# - use the pre_ctf_tomogram outputs to generate star file for tomo reconstruction
+# - create a directory for the tomograms needed for star files 
+# - ensure this runs only once, when all tomo reconstruction is complete
+prepare_star() {
+    local workdir="$PWD"
+    local base="${1:-$RECONSTRUCTED_DIR}"
+    local even="${1:-$base/EVN}"
+    local odd="${2:-$base/ODD}"
+    mkdir -p "$even" "$odd"
+
+    # prepare star has no option to set output dir 
+    local outdir="$workdir/output/reconstructed/denoised"
+    mkdir -p "$outdir" && cd "$outdir" || exit 1
+
+
+    #create error fall backs
+
+    module load ${ISONET_LOAD} || exit $?
+
+    #change star name to prefix.star 
+    # - var APIX, CS, KV, AC (?), TILT_MIN, TILT_MAX 
+    # - add rindefocus
+    # - make func like org aretomo call
+    isonet.py prepare_star \
+        --even "$even" \
+        --odd "$odd" \
+        --full None \
+        --star_name tomograms.star \
+        --mask_folder None \
+        --coordinate_folder None \
+        --pixel_size 5.4 \
+        --cs 2.7 \
+        --voltage 300 \
+        --ac 0.1 \
+        --tilt_min -60 \
+        --tilt_max 60 \
+        --create_average False \
+        --number_subtomos auto
+  
+}
+
+# create function to denoise .star 
+# - 
+tomo_denoise() {
+    local star="${1:-tomograms.star}"
+    local outdir="${2:-$RECONSTRUCTED_DIR/denoised}"
+    mkdir -p "$outdir"
+
+    # create error fallbacks
+    if [[ ! -f "$star" ]]; then 
+      >&2 echo "Error: star file $star not found"
+      return 1
+    fi
+
+    # for now, user must use reconstruct task to use isonet (until pipeline can support single tomogram denoising)
+    isonet.py denoise \
+        --star_file "$star" \
+        --gpuID "${GPU:-0,1,2}" \
+        --ncpus 16 \
+        --arch unet-medium \
+        --pretrained_model None \
+        --cube_size 96 \
+        --epochs 50 \
+        --batch_size auto \
+        --loss_func L2 \
+        --save_interval 10 \
+        --learning_rate 0.0003 \
+        --learning_rate_min 0.0003 \
+        --mixed_precision True \
+        --CTF_mode network \
+        --isCTFflipped False \
+        --with_preview True \
+        --prev_tomo_idx 1 \
+        --output_dir "$outdir"
+}
+
+
+
+
+
 lowpass_filter() {
   local input="$1"
   local output="$2"
@@ -651,100 +769,98 @@ lowpass_filter() {
   >&2 echo "executing: lowpass filtering" 1>&2
   python3 - "$input" "$output" "$lowpass" <<'PY'
 
-import numpy as np
-from scipy.ndimage import gaussian_filter
+  import numpy as np
+  from scipy.ndimage import gaussian_filter
 
-def lowpass_sigma_px(resolution_A, pixel_size_A):
-    """Gaussian σ (pixels) that corresponds to a resolution cutoff in Å."""
-    return resolution_A / (2 * np.pi * pixel_size_A)
-
-
-def lowpass_2d(img, resolution=40.0, pixel_size=6.8):
-    """Gaussian low-pass of a 2D slice (returns float32).
-
-    Args:
-        img:        2D array (any dtype).
-        resolution: cutoff resolution in Å — features smaller than this are
-                    suppressed. Lower = less smoothing.
-        pixel_size: Å per pixel of `img`.
-    """
-    f = img.astype(np.float32)
-    # Gaussian low-pass in Fourier space equivalent:
-    # σ_px = resolution / (2π * pixel_size)
-    sigma_px = lowpass_sigma_px(resolution, pixel_size)
-    return gaussian_filter(f, sigma_px).astype(np.float32)
+  def lowpass_sigma_px(resolution_A, pixel_size_A):
+      """Gaussian σ (pixels) that corresponds to a resolution cutoff in Å."""
+      return resolution_A / (2 * np.pi * pixel_size_A)
 
 
-def lowpass_volume_2d(volume, resolution=40.0, pixel_size=6.8):
-    """Apply lowpass_2d slice-by-slice over a (Z, Y, X) volume (float32)."""
-    out = np.empty(volume.shape, dtype=np.float32)
-    for z in range(volume.shape[0]):
-        out[z] = lowpass_2d(volume[z], resolution, pixel_size)
-    return out
+  def lowpass_2d(img, resolution=40.0, pixel_size=6.8):
+      """Gaussian low-pass of a 2D slice (returns float32).
+
+      Args:
+          img:        2D array (any dtype).
+          resolution: cutoff resolution in Å — features smaller than this are
+                      suppressed. Lower = less smoothing.
+          pixel_size: Å per pixel of `img`.
+      """
+      f = img.astype(np.float32)
+      # Gaussian low-pass in Fourier space equivalent:
+      # σ_px = resolution / (2π * pixel_size)
+      sigma_px = lowpass_sigma_px(resolution, pixel_size)
+      return gaussian_filter(f, sigma_px).astype(np.float32)
 
 
-def lowpass_3d(vol, cutoff_fraction, pixel_size=1.0):
-    """Apply a 3D low-pass filter.
-
-    Parameters
-    ----------
-    vol : (N, N, N) array
-    cutoff_fraction : float — cutoff as fraction of Nyquist (0-0.5)
-    pixel_size : float — Å/pixel
-
-    Returns
-    -------
-    filtered : (N, N, N) array
-    """
-    N = vol.shape[0]
-
-    freqs = np.fft.fftfreq(N)
-    fz, fy, fx = np.meshgrid(freqs, freqs, freqs, indexing='ij')
-    freq_r = np.sqrt(fx**2 + fy**2 + fz**2)
-
-    # Butterworth low-pass (order 4)
-    order = 4
-    lp = 1.0 / (1.0 + (freq_r / max(cutoff_fraction, 1e-6))**(2 * order))
-
-    V = np.fft.fftn(vol)
-    V *= lp
-    return np.fft.ifftn(V).real.astype(np.float32)
+  def lowpass_volume_2d(volume, resolution=40.0, pixel_size=6.8):
+      """Apply lowpass_2d slice-by-slice over a (Z, Y, X) volume (float32)."""
+      out = np.empty(volume.shape, dtype=np.float32)
+      for z in range(volume.shape[0]):
+          out[z] = lowpass_2d(volume[z], resolution, pixel_size)
+      return out
 
 
-if __name__ == "__main__":
-    # CLI: python lowpass_filter.py in.mrc out.mrc [resolution_A] [pixel_size_A]
-    # Applies the 2D Gaussian low-pass to every slice. If pixel_size is omitted
-    # it is read from the MRC header (falls back to 6.8 Å/px).
-    import sys
-    import mrcfile
+  def lowpass_3d(vol, cutoff_fraction, pixel_size=1.0):
+      """Apply a 3D low-pass filter.
 
-    if len(sys.argv) < 3:
-        print("Usage: python - in.mrc out.mrc [resolution_A] [pixel_size_A]", file=sys.stderr)
-        sys.exit(1)
+      Parameters
+      ----------
+      vol : (N, N, N) array
+      cutoff_fraction : float — cutoff as fraction of Nyquist (0-0.5)
+      pixel_size : float — Å/pixel
 
-    in_path = sys.argv[1]
-    out_path = sys.argv[2]
-    res = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] not in ("", "null") else 40.0
+      Returns
+      -------
+      filtered : (N, N, N) array
+      """
+      N = vol.shape[0]
 
-    with mrcfile.open(in_path, permissive=True) as m:
-        vol = np.asarray(m.data, dtype=np.float32)
-        vs = m.voxel_size
-        hdr_px = float(getattr(vs, 'x', 0) or 0)
+      freqs = np.fft.fftfreq(N)
+      fz, fy, fx = np.meshgrid(freqs, freqs, freqs, indexing='ij')
+      freq_r = np.sqrt(fx**2 + fy**2 + fz**2)
 
-    px = float(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] not in ("", "null") else (hdr_px if hdr_px > 1.01 else 6.8)
-    if vol.ndim == 2:
-        vol = vol[None]
+      # Butterworth low-pass (order 4)
+      order = 4
+      lp = 1.0 / (1.0 + (freq_r / max(cutoff_fraction, 1e-6))**(2 * order))
 
-    out = lowpass_volume_2d(vol, res, px)
-    with mrcfile.new(out_path, overwrite=True) as mo:
-        mo.set_data(out)
-        mo.voxel_size = vs
+      V = np.fft.fftn(vol)
+      V *= lp
+      return np.fft.ifftn(V).real.astype(np.float32)
 
-    print(f"Wrote {out_path}  shape={out.shape}  cutoff={res} Å  px={px} Å/px  sigma={lowpass_sigma_px(res, px):.2f} px", file=sys.stderr)
+
+  if __name__ == "__main__":
+      # CLI: python lowpass_filter.py in.mrc out.mrc [resolution_A] [pixel_size_A]
+      # Applies the 2D Gaussian low-pass to every slice. If pixel_size is omitted
+      # it is read from the MRC header (falls back to 6.8 Å/px).
+      import sys
+      import mrcfile
+
+      if len(sys.argv) < 3:
+          print("Usage: python - in.mrc out.mrc [resolution_A] [pixel_size_A]", file=sys.stderr)
+          sys.exit(1)
+
+      in_path = sys.argv[1]
+      out_path = sys.argv[2]
+      res = float(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3] not in ("", "null") else 40.0
+
+      with mrcfile.open(in_path, permissive=True) as m:
+          vol = np.asarray(m.data, dtype=np.float32)
+          vs = m.voxel_size
+          hdr_px = float(getattr(vs, 'x', 0) or 0)
+
+      px = float(sys.argv[4]) if len(sys.argv) > 4 and sys.argv[4] not in ("", "null") else (hdr_px if hdr_px > 1.01 else 6.8)
+      if vol.ndim == 2:
+          vol = vol[None]
+
+      out = lowpass_volume_2d(vol, res, px)
+      with mrcfile.new(out_path, overwrite=True) as mo:
+          mo.set_data(out)
+          mo.voxel_size = vs
+
+      print(f"Wrote {out_path}  shape={out.shape}  cutoff={res} Å  px={px} Å/px  sigma={lowpass_sigma_px(res, px):.2f} px", file=sys.stderr)
 
 PY
-
-
 }
 
 generate_preview() {
@@ -839,8 +955,7 @@ generate_preview() {
   fi
 
 dump_file_meta "${output}" >&2 || exit $?
-echo "$output"
-
+asecho "$output"
 }
 
 #generate/dump file meta (smth similar) *1370*
