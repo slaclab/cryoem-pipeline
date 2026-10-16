@@ -28,6 +28,8 @@ APIX=${APIX}
 SUPERRES=${SUPERRES:-0}
 PHASE_PLATE=${PHASE_PLATE:-0}
 AMPLITUDE_CONTRAST=${AMPLITUDE_CONTRAST:-0.1}
+MIN_TILT=${MIN_TILT:--60}
+MAX_TILT=${MAX_TILT:-60}
 LOWPASS=${LOWPASS:-40}
 
 #ARETOMO PARAMETERS
@@ -57,7 +59,8 @@ OUTXF=${OUTXF:-0}
 FLIPVOL=${FLIPVOL}
 
 # ISONET PARAMS
-# - add isonet params 
+AMPLITUDE_CONTRAST=${AMPLITUDE_CONTRAST:-0.1}
+ISO_GPU=${ISO_GPU:-0,1,2,3} #isonet format requires no spaces 
 
 #help function: explains required and optional arguments 
 usage() {
@@ -272,13 +275,14 @@ ensure_all_files() {
 #the function will ask if the mode is spa, then call do_spa function 
 #if the mode is tomo, then call do_tomo function 
 #else, print an error message and exit 
+# - call do_tomo_reconstruct, do_tomo_denoise, or do_preview
 for MDOC in "${MDOCS[@]}"; do
 
   # strip ./
   if [[ "$MDOC" = ./* ]]; then MDOC="${MDOC:2}"; fi
   if [[ "$MODE" == "tomo" ]]; then
       >&2 echo "MDOC: ${MDOC}"
-      do_tomo
+      do_tomo_reconstruct 
   elif [[ "$MODE" == "spa" ]]; then
       do_spa
   else
@@ -287,6 +291,10 @@ for MDOC in "${MDOCS[@]}"; do
     exit 1
   fi
 done
+
+if [[ "$MODE" == "tomo" && ( "$TASK" == "denoise" || "$TASK" == "all" ) ]]; then
+  do_tomo_denoise
+fi
 }
 
 
@@ -368,7 +376,7 @@ do_spa()
 #create do_aretomo 
 # print information about tilt series
 # calls function inside of it, keep track of time
-do_tomo() {
+do_tomo_reconstruct() {
   if [ ${NO_PREAMBLE} -eq 0  ]; then
     do_prepipeline
     if [[ "$TASK" == "reconstruct" || "$TASK" == "denoise" || "$TASK" == "preview" || "$TASK" == "all" ]]; then
@@ -418,35 +426,6 @@ do_tomo() {
     echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
   fi
 
-  if [[ "$TASK" == "denoise" || "$TASK" == "all" ]]; then
-    #temp: disable denoise task if reconstruct task has not been run yet
-    # - add a better way to check
-    if [[ "$TASK" == "denoise" && "$TASK" != "reconstruct" ]]; then
-      >&2 echo "Error: denoise task requires reconstruct task to be run first."
-      exit 1
-    fi
-
-    # input code to ensure that all mdocs have been processed before creating star
-    # - maybe get num of mdocs in input directory
-
-
-    echo "  - task: denoise"
-    local start=$(date +%s.%N)
-    if [[ ! -f "$expected_tomogram" ]]; then
-      >&2 echo "Error: tomogram file $expected_tomogram does not exist for denoising."
-      exit 1
-    else
-      TOMOGRAM="$expected_tomogram"
-      local star_path=$(prepare_star "$RECONSTRUCTED_DIR") || exit $?
-      local denoise_path=$(tomo_denoise "$star_path" "$RECONSTRUCTED_DIR/denoised") || exit $?
-      echo "    files successfully generated in $denoise_path:"
-      # add dump_meta in function
-    fi
-    local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
-    echo "    duration: $duration"
-    echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
-  fi
-
   if [[ "$TASK" == "preview" || "$TASK" == "all" ]]; then
     echo "  - task: preview" 
     local start=$(date +%s.%N)
@@ -464,6 +443,34 @@ do_tomo() {
     echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
   fi
 }
+
+do_tomo_denoise() {
+  local missing_tomograms=()
+  local mdoc
+  for mdoc in "${MDOCS[@]}"; do
+    local mdoc_tomogram="${RECONSTRUCTED_DIR}/$(basename "${mdoc%.*}")_Vol.mrc"
+    if [[ ! -f "$mdoc_tomogram" ]]; then
+      missing_tomograms+=("$mdoc_tomogram")
+    fi
+  done
+
+  if [[ ${#missing_tomograms[@]} -gt 0 ]]; then
+    >&2 echo "Error: denoising requires reconstructed tomograms for all input mdocs. Missing:"
+    >&2 echo "  ${missing_tomograms[@]}"
+    exit 1
+  fi
+
+  echo "  - task: denoise"
+  local start=$(date +%s.%N)
+  local star_path=$(prepare_star "$RECONSTRUCTED_DIR") || exit $?
+  local denoise_path=$(tomo_denoise "$star_path" "$RECONSTRUCTED_DIR/denoised") || exit $?
+  echo "    files successfully generated in $denoise_path:"
+  local duration=$( awk '{print $2-$1}' <<< "$start $(date +%s.%N)" )
+  echo "    duration: $duration"
+  >&2 echo "    executed_at: " $(date --utc +%FT%TZ -d @$start)
+}
+
+# do tomo_preview
 
 
 # write out record of data
@@ -662,7 +669,7 @@ pre_ctf_tomogram() {
   local outdir="${2:-OUTDIR}"
   local filename=$(basename -- "$input")
   local prefix="${filename%.*}" #remove extension
-  local all_mrc=("$outdir"/*.mrc)
+  local all_mrc=("$outdir"/*_Vol.mrc)
   if [[ "$prefix" == "$filename" ]]; then
     prefix="$filename"
   fi
@@ -680,15 +687,20 @@ pre_ctf_tomogram() {
   fi
 }
 
+
+
 # create function to prepare star file for tomo reconstruction
 # - use the pre_ctf_tomogram outputs to generate star file for tomo reconstruction
 # - create a directory for the tomograms needed for star files 
 # - ensure this runs only once, when all tomo reconstruction is complete
 prepare_star() {
+    local input="${INPUT}"
+    local prefix="${input%.*}." # strip extension of mdoc
+    local star_name="${prefix}.star"
     local workdir="$PWD"
     local base="${1:-$RECONSTRUCTED_DIR}"
-    local even="${1:-$base/EVN}"
-    local odd="${2:-$base/ODD}"
+    local even="${2:-$base/EVN}"
+    local odd="${3:-$base/ODD}"
     mkdir -p "$even" "$odd"
 
     # prepare star has no option to set output dir 
@@ -708,23 +720,24 @@ prepare_star() {
         --even "$even" \
         --odd "$odd" \
         --full None \
-        --star_name tomograms.star \
+        --star_name "$star_name" \
         --mask_folder None \
         --coordinate_folder None \
-        --pixel_size 5.4 \
-        --cs 2.7 \
-        --voltage 300 \
-        --ac 0.1 \
+        --pixel_size {$APIX} \
+        --cs {$CS} \
+        --voltage {$KV} \
+        --ac {$AMPLITUDE_CONTRAST} \
         --tilt_min -60 \
         --tilt_max 60 \
         --create_average False \
         --number_subtomos auto
-  
+  #create avg for true single tomo
 }
 
 # create function to denoise .star 
 # - 
 tomo_denoise() {
+    local in
     local star="${1:-tomograms.star}"
     local outdir="${2:-$RECONSTRUCTED_DIR/denoised}"
     mkdir -p "$outdir"
@@ -735,10 +748,10 @@ tomo_denoise() {
       return 1
     fi
 
-    # for now, user must use reconstruct task to use isonet (until pipeline can support single tomogram denoising)
+    # for now, should use reconstruct task to use isonet (until pipeline can support single tomogram denoising)
     isonet.py denoise \
         --star_file "$star" \
-        --gpuID "${GPU:-0,1,2}" \
+        --gpuID "${ISO_GPU}" \
         --ncpus 16 \
         --arch unet-medium \
         --pretrained_model None \
@@ -752,7 +765,7 @@ tomo_denoise() {
         --mixed_precision True \
         --CTF_mode network \
         --isCTFflipped False \
-        --with_preview True \
+        --with_preview False \
         --prev_tomo_idx 1 \
         --output_dir "$outdir"
 }
@@ -765,8 +778,9 @@ lowpass_filter() {
   local input="$1"
   local output="$2"
   local lowpass="${3:-40.0}"
-  module load ${PYLIBS_LOAD} || exit $?
+
   >&2 echo "executing: lowpass filtering" 1>&2
+  module load ${PYLIBS_LOAD} || exit $?
   python3 - "$input" "$output" "$lowpass" <<'PY'
 
   import numpy as np
