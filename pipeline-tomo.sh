@@ -9,8 +9,11 @@ FFMPEG_VERSION="4.4.2"
 FFMPEG_LOAD="ffmpeg/${FFMPEG_VERSION}"
 PYLIBS_VERSION="1.1"
 PYLIBS_LOAD="pylibs/${PYLIBS_VERSION}"
-ISONET_VERSION="2.0.0"
-ISONET_LOAD="isonet/${ISONET_VERSION}"
+# ISONET_VERSION="2.0.0"
+# ISONET_LOAD="isonet/${ISONET_VERSION}"
+DENOISET_VERSION="1.0.0"
+DENOISET_LOAD="denoiset/${DENOISET_VERSION}"
+
 
 # GENERATE
 # select mode/task and define terms
@@ -737,7 +740,7 @@ prepare_star() {
 # create function to denoise .star 
 # - 
 tomo_denoise() {
-    local in
+    local input="${INPUT}"
     local star="${1:-tomograms.star}"
     local outdir="${2:-$RECONSTRUCTED_DIR/denoised}"
     mkdir -p "$outdir"
